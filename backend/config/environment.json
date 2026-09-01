@@ -1,0 +1,30 @@
+{
+  "version": "1.0",
+  "description": "灵犀智能家居环境传感器仿真配置。修改此文件可调整环境参数、波动范围、联动规则。",
+  "sensors": {
+    "temp_indoor": {"initial": 25, "min": 16, "max": 35, "fluctuation": 0.3, "label": "室内温度", "unit": "℃"},
+    "humidity": {"initial": 50, "min": 20, "max": 90, "fluctuation": 1.0, "label": "室内湿度", "unit": "%"},
+    "light_level": {"initial": 400, "min": 0, "max": 1000, "fluctuation": 20, "label": "光照强度", "unit": "lux"},
+    "air_quality": {"initial": 85, "min": 20, "max": 100, "fluctuation": 2.0, "label": "空气质量", "unit": ""},
+    "motion_living": {"initial": true, "label": "客厅人员", "unit": ""},
+    "motion_bedroom": {"initial": false, "label": "卧室人员", "unit": ""}
+  },
+  "day_night_cycle": {
+    "enabled": true,
+    "period_seconds": 120,
+    "description": "昼夜光照循环周期（秒），一个完整周期模拟一天。演示用，可加快或减慢。"
+  },
+  "device_effects": {
+    "light_on_brightness_delta": 50,
+    "curtain_open_light_delta": 200,
+    "ac_on_temp_stabilize": true,
+    "fan_on_air_quality_delta": -5,
+    "humidifier_on_humidity_delta": 2
+  },
+  "alert_thresholds": {
+    "temp_high": 30,
+    "temp_low": 15,
+    "air_quality_poor": 50,
+    "description": "主动告警阈值。超过这些值时数字人主动提示。"
+  }
+}

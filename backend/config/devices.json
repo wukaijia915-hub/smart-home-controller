@@ -1,0 +1,225 @@
+{
+  "version": "1.0",
+  "description": "灵犀智能家居设备配置清单。修改此文件可增删设备、调整初始状态，无需改代码。",
+  "devices": [
+    {
+      "device_id": "light_living_01",
+      "name": "客厅吊灯",
+      "category": "light",
+      "room": "客厅",
+      "protocol": "wifi",
+      "attributes": {
+        "on": {"value": false, "type": "bool", "label": "开关"},
+        "brightness": {"value": 0, "type": "number", "min": 0, "max": 100, "unit": "%", "label": "亮度"},
+        "color_temp": {"value": 4000, "type": "number", "min": 2700, "max": 6500, "unit": "K", "label": "色温"}
+      },
+      "commands": ["turn_on", "turn_off", "set_brightness", "set_color_temp"]
+    },
+    {
+      "device_id": "light_living_02",
+      "name": "客厅台灯",
+      "category": "light",
+      "room": "客厅",
+      "protocol": "zigbee",
+      "attributes": {
+        "on": {"value": false, "type": "bool", "label": "开关"},
+        "brightness": {"value": 0, "type": "number", "min": 0, "max": 100, "unit": "%", "label": "亮度"},
+        "color_temp": {"value": 3500, "type": "number", "min": 2700, "max": 6500, "unit": "K", "label": "色温"}
+      },
+      "commands": ["turn_on", "turn_off", "set_brightness", "set_color_temp"]
+    },
+    {
+      "device_id": "curtain_living_01",
+      "name": "客厅窗帘",
+      "category": "curtain",
+      "room": "客厅",
+      "protocol": "ble",
+      "attributes": {
+        "on": {"value": false, "type": "bool", "label": "开启"},
+        "position": {"value": 0, "type": "number", "min": 0, "max": 100, "unit": "%", "label": "开合度"}
+      },
+      "commands": ["open", "close", "set_position"]
+    },
+    {
+      "device_id": "ac_living_01",
+      "name": "客厅空调",
+      "category": "ac",
+      "room": "客厅",
+      "protocol": "wifi",
+      "attributes": {
+        "on": {"value": false, "type": "bool", "label": "开关"},
+        "mode": {"value": "cool", "type": "enum", "options": ["cool", "heat", "fan", "auto"], "label": "模式"},
+        "temperature": {"value": 26, "type": "number", "min": 16, "max": 30, "unit": "℃", "label": "设定温度"},
+        "fan_speed": {"value": "auto", "type": "enum", "options": ["low", "mid", "high", "auto"], "label": "风速"}
+      },
+      "commands": ["turn_on", "turn_off", "set_temperature", "set_mode", "set_fan_speed"]
+    },
+    {
+      "device_id": "tv_living_01",
+      "name": "客厅电视",
+      "category": "tv",
+      "room": "客厅",
+      "protocol": "wifi",
+      "attributes": {
+        "on": {"value": false, "type": "bool", "label": "开关"},
+        "volume": {"value": 20, "type": "number", "min": 0, "max": 100, "unit": "%", "label": "音量"},
+        "channel": {"value": 1, "type": "number", "min": 1, "max": 100, "label": "频道"}
+      },
+      "commands": ["turn_on", "turn_off", "set_volume", "next_channel", "prev_channel"]
+    },
+    {
+      "device_id": "fan_living_01",
+      "name": "客厅风扇",
+      "category": "fan",
+      "room": "客厅",
+      "protocol": "zigbee",
+      "attributes": {
+        "on": {"value": false, "type": "bool", "label": "开关"},
+        "speed": {"value": "mid", "type": "enum", "options": ["low", "mid", "high"], "label": "档位"}
+      },
+      "commands": ["turn_on", "turn_off", "set_speed"]
+    },
+    {
+      "device_id": "humidifier_living_01",
+      "name": "客厅加湿器",
+      "category": "humidifier",
+      "room": "客厅",
+      "protocol": "wifi",
+      "attributes": {
+        "on": {"value": false, "type": "bool", "label": "开关"},
+        "target": {"value": 55, "type": "number", "min": 30, "max": 80, "unit": "%", "label": "目标湿度"}
+      },
+      "commands": ["turn_on", "turn_off", "set_target"]
+    },
+    {
+      "device_id": "light_bedroom_01",
+      "name": "卧室吸顶灯",
+      "category": "light",
+      "room": "卧室",
+      "protocol": "wifi",
+      "attributes": {
+        "on": {"value": false, "type": "bool", "label": "开关"},
+        "brightness": {"value": 0, "type": "number", "min": 0, "max": 100, "unit": "%", "label": "亮度"},
+        "color_temp": {"value": 4000, "type": "number", "min": 2700, "max": 6500, "unit": "K", "label": "色温"}
+      },
+      "commands": ["turn_on", "turn_off", "set_brightness", "set_color_temp"]
+    },
+    {
+      "device_id": "curtain_bedroom_01",
+      "name": "卧室窗帘",
+      "category": "curtain",
+      "room": "卧室",
+      "protocol": "ble",
+      "attributes": {
+        "on": {"value": false, "type": "bool", "label": "开启"},
+        "position": {"value": 0, "type": "number", "min": 0, "max": 100, "unit": "%", "label": "开合度"}
+      },
+      "commands": ["open", "close", "set_position"]
+    },
+    {
+      "device_id": "ac_bedroom_01",
+      "name": "卧室空调",
+      "category": "ac",
+      "room": "卧室",
+      "protocol": "matter",
+      "attributes": {
+        "on": {"value": false, "type": "bool", "label": "开关"},
+        "mode": {"value": "cool", "type": "enum", "options": ["cool", "heat", "fan", "auto"], "label": "模式"},
+        "temperature": {"value": 26, "type": "number", "min": 16, "max": 30, "unit": "℃", "label": "设定温度"},
+        "fan_speed": {"value": "auto", "type": "enum", "options": ["low", "mid", "high", "auto"], "label": "风速"}
+      },
+      "commands": ["turn_on", "turn_off", "set_temperature", "set_mode", "set_fan_speed"]
+    },
+    {
+      "device_id": "lock_entry_01",
+      "name": "入户智能门锁",
+      "category": "lock",
+      "room": "玄关",
+      "protocol": "zigbee",
+      "attributes": {
+        "locked": {"value": true, "type": "bool", "label": "锁定"},
+        "mode": {"value": "normal", "type": "enum", "options": ["normal", "away", "vacation"], "label": "模式"},
+        "battery": {"value": 85, "type": "number", "min": 0, "max": 100, "unit": "%", "label": "电量"}
+      },
+      "commands": ["lock", "unlock", "set_lock_mode"]
+    },
+    {
+      "device_id": "robot_vacuum_living_01",
+      "name": "扫地机器人",
+      "category": "robot_vacuum",
+      "room": "客厅",
+      "protocol": "wifi",
+      "attributes": {
+        "on": {"value": false, "type": "bool", "label": "运行"},
+        "status": {"value": "idle", "type": "enum", "options": ["idle", "cleaning", "charging", "paused"], "label": "状态"},
+        "battery": {"value": 90, "type": "number", "min": 0, "max": 100, "unit": "%", "label": "电量"},
+        "clean_mode": {"value": "auto", "type": "enum", "options": ["auto", "edge", "spot", "deep"], "label": "清洁模式"}
+      },
+      "commands": ["start_clean", "stop_clean", "return_dock", "set_clean_mode"]
+    },
+    {
+      "device_id": "range_hood_kitchen_01",
+      "name": "厨房抽油烟机",
+      "category": "range_hood",
+      "room": "厨房",
+      "protocol": "wifi",
+      "attributes": {
+        "on": {"value": false, "type": "bool", "label": "开关"},
+        "fan_level": {"value": 0, "type": "number", "min": 0, "max": 4, "label": "风速档位"}
+      },
+      "commands": ["turn_on", "turn_off", "set_fan_level"]
+    },
+    {
+      "device_id": "light_kitchen_01",
+      "name": "厨房灯",
+      "category": "light",
+      "room": "厨房",
+      "protocol": "wifi",
+      "attributes": {
+        "on": {"value": false, "type": "bool", "label": "开关"},
+        "brightness": {"value": 0, "type": "number", "min": 0, "max": 100, "unit": "%", "label": "亮度"},
+        "color_temp": {"value": 5000, "type": "number", "min": 2700, "max": 6500, "unit": "K", "label": "色温"}
+      },
+      "commands": ["turn_on", "turn_off", "set_brightness", "set_color_temp"]
+    },
+    {
+      "device_id": "camera_living_01",
+      "name": "客厅摄像头",
+      "category": "camera",
+      "room": "客厅",
+      "protocol": "wifi",
+      "attributes": {
+        "streaming": {"value": false, "type": "bool", "label": "直播中"},
+        "last_photo": {"value": 0, "type": "number", "label": "最近拍照时间"},
+        "motion_detected": {"value": false, "type": "bool", "label": "移动侦测"}
+      },
+      "commands": ["start_stream", "stop_stream", "take_photo"]
+    },
+    {
+      "device_id": "speaker_living_01",
+      "name": "智能音箱",
+      "category": "speaker",
+      "room": "客厅",
+      "protocol": "wifi",
+      "attributes": {
+        "on": {"value": false, "type": "bool", "label": "开关"},
+        "playing": {"value": false, "type": "bool", "label": "播放中"},
+        "volume": {"value": 30, "type": "number", "min": 0, "max": 100, "unit": "%", "label": "音量"},
+        "track": {"value": "", "type": "text", "label": "当前曲目"}
+      },
+      "commands": ["turn_on", "turn_off", "play_music", "stop_music", "set_volume"]
+    },
+    {
+      "device_id": "gas_stove_kitchen_01",
+      "name": "厨房燃气灶",
+      "category": "gas_stove",
+      "room": "厨房",
+      "protocol": "zigbee",
+      "attributes": {
+        "on": {"value": false, "type": "bool", "label": "点火"},
+        "flame_level": {"value": 0, "type": "number", "min": 0, "max": 5, "label": "火力档位"}
+      },
+      "commands": ["turn_on", "turn_off", "set_flame_level"]
+    }
+  ]
+}

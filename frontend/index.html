@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>智能家居数字人中枢 · 全屋异构智能家居交互系统</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app">
+  <!-- 左侧：3D 沙盒 -->
+  <div id="stage">
+    <div id="stage-header">
+      <span class="logo">🏠 全屋智能中枢 · Web 数字孪生沙盒</span>
+      <span id="scene-tag" class="scene-tag">居家模式</span>
+    </div>
+    <div id="scene3d"></div>
+    <div id="orbit-hint">🖱️ 左键旋转 · 按住滚轮平移 · 滚轮缩放</div>
+    <div id="sensor-panel" class="panel">
+      <div class="panel-title">环境传感器</div>
+      <div class="sensor-grid">
+        <div class="sensor-item"><span class="s-name">室内温度</span><span class="s-val" id="s-temp">--</span></div>
+        <div class="sensor-item"><span class="s-name">室内湿度</span><span class="s-val" id="s-hum">--</span></div>
+        <div class="sensor-item"><span class="s-name">光照强度</span><span class="s-val" id="s-light">--</span></div>
+        <div class="sensor-item"><span class="s-name">客厅人员</span><span class="s-val" id="s-motion">--</span></div>
+        <div class="sensor-item"><span class="s-name">空气质量</span><span class="s-val" id="s-air">--</span></div>
+        <div class="sensor-item"><span class="s-name">卧室人员</span><span class="s-val" id="s-motion2">--</span></div>
+      </div>
+    </div>
+
+    <div id="trace-panel" class="panel">
+      <div class="panel-title">决策链路 <span id="trace-ver" style="float:right;color:var(--accent-2);font-size:11px;"></span></div>
+      <div id="trace-list"></div>
+    </div>
+  </div>
+
+  <!-- 右侧：数字人 + 对话 + 设备 -->
+  <div id="side">
+    <div id="dh-panel" class="panel">
+      <div class="panel-title">数字人中控 · 小智</div>
+      <div id="dh-avatar"></div>
+      <div id="dh-status">正在待命</div>
+      <div class="dh-actions">
+        <div class="dh-presets">
+          <button class="dh-preset active" data-avatar="robot" title="小智（机器人）">
+            <img src="assets/avatar_robot.png" alt="小智">
+            <span>小智</span>
+          </button>
+          <button class="dh-preset" data-avatar="male" title="小灵（男性）">
+            <img src="assets/avatar_male.png" alt="小灵">
+            <span>小灵</span>
+          </button>
+        </div>
+        <button id="dh-upload-btn" title="上传图片定制形象">📷 定制形象</button>
+        <button id="dh-reset-btn" title="恢复默认形象">↺ 默认</button>
+        <input type="file" id="dh-avatar-input" accept="image/*" style="display:none">
+      </div>
+    </div>
+
+    <div id="device-panel" class="panel">
+      <div class="panel-title">设备状态</div>
+      <div id="device-list"></div>
+    </div>
+
+    <div id="scene-panel" class="panel">
+      <div class="panel-title">场景模式</div>
+      <div id="scene-buttons">
+        <button data-scene="home">回家</button>
+        <button data-scene="away">离家</button>
+        <button data-scene="movie">观影</button>
+        <button data-scene="sleep">睡眠</button>
+        <button data-scene="morning">起床</button>
+        <button data-scene="guest">会客</button>
+        <button data-scene="save">节能</button>
+      </div>
+    </div>
+
+    <div id="schedule-panel" class="panel">
+      <div class="panel-title">定时任务</div>
+      <div id="schedule-list" style="margin-bottom:8px;font-size:12px;color:var(--text-dim);">暂无定时任务</div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+        <input id="sch-name" placeholder="任务名" style="flex:1;min-width:80px;background:#141c2c;border:1px solid var(--panel-border);border-radius:6px;padding:5px 8px;color:var(--text);font-size:12px;">
+        <input id="sch-time" type="time" value="07:00" style="background:#141c2c;border:1px solid var(--panel-border);border-radius:6px;padding:5px 8px;color:var(--text);font-size:12px;">
+        <select id="sch-action" style="background:#141c2c;border:1px solid var(--panel-border);border-radius:6px;padding:5px 8px;color:var(--text);font-size:12px;">
+          <option value="home">回家模式</option>
+          <option value="away">离家模式</option>
+          <option value="movie">观影模式</option>
+          <option value="sleep">睡眠模式</option>
+          <option value="morning">起床模式</option>
+          <option value="guest">会客模式</option>
+          <option value="save">节能模式</option>
+        </select>
+        <button id="sch-add-btn" style="background:var(--accent);color:#0b1220;border:none;border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer;font-weight:600;">添加</button>
+      </div>
+    </div>
+
+    <div id="chat-panel" class="panel">
+      <div class="panel-title">对话</div>
+      <div id="chat-log"></div>
+      <div id="chat-input-row">
+        <button id="mic-btn" title="语音输入">🎤</button>
+        <input id="chat-input" type="text" placeholder="试试说：我回家了 / 看电影 / 空调调到24度..." autocomplete="off">
+        <button id="chat-send">发送</button>
+        <button id="tts-toggle" title="语音播报开关" class="active">🔊</button>
+      </div>
+      <div id="chat-hint">💡 支持自然语言：回家、出门、看电影、睡觉、好热、打开窗帘、电视音量 30…</div>
+    </div>
+  </div>
+</div>
+
+  <!-- 高危操作确认弹窗 -->
+  <div id="confirm-modal" class="modal-mask" style="display:none;">
+    <div class="modal-box">
+      <div class="modal-title">⚠️ 高危操作确认</div>
+      <div class="modal-body" id="confirm-text"></div>
+      <div class="modal-actions">
+        <button id="confirm-cancel">取消</button>
+        <button id="confirm-ok">确认执行</button>
+      </div>
+    </div>
+  </div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "./js/three.module.js",
+    "three/addons/": "./js/"
+  }
+}
+</script>
+<script type="module" src="js/scene.js"></script>
+<script type="module" src="js/digital_human.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
