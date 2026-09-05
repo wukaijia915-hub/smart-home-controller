@@ -73,7 +73,10 @@ class RootAgent:
         }
 
     # ---------- 决策入口 ----------
-    def plan(self, text: str, sensors: Optional[dict] = None, history: Optional[list] = None) -> TaskPlan:
+    def plan(self, text: str, sensors: Optional[dict] = None, history: Optional[list] = None,
+             allow_cloud: bool = True, cloud_text: Optional[str] = None) -> TaskPlan:
+        """allow_cloud=False 时禁止调用云端大模型（L0 高敏数据强制端侧本地处理）。
+        cloud_text 为上云前脱敏后的文本，仅用于云侧 LLM 推理，规则层仍用原文。"""
         cleaned = (text or "").strip()
 
         # 0) 空输入 / 无意义输入保护：不调用 LLM、不执行任何操作
@@ -97,10 +100,12 @@ class RootAgent:
             return TaskPlan(is_command=True, source="rule", reply=reply,
                             sub_tasks=sub_tasks, state_version=self.store.version)
 
-        # 3) LLM 慢路径：意图理解 + 任务拆解（只拆高层目标，不产出具体命令）
-        plan = self._llm_plan(cleaned, sensors, history)
-        if plan is not None:
-            return plan
+        # 3) LLM 慢路径（云侧大模型）：意图理解 + 任务拆解（只拆高层目标，不产出具体命令）。
+        #    L0 高敏数据（allow_cloud=False）禁止上云，此处直接跳过。
+        if allow_cloud:
+            plan = self._llm_plan(cloud_text or cleaned, sensors, history)
+            if plan is not None:
+                return plan
 
         # 4) 兜底
         return TaskPlan(

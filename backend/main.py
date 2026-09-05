@@ -369,6 +369,44 @@ async def api_skills_delete(skill_id: str):
     return {"ok": ok}
 
 
+# ---------- 端云协同（命题核心）----------
+@app.post("/api/edge-cloud/route")
+async def api_edge_cloud_route(body: dict):
+    """端云路由演示：对输入做隐私分级，返回端/云路由决策。
+
+    body: {text, sensors, modalities}
+    """
+    text = body.get("text", "")
+    sensors = body.get("sensors") or agent.sensors
+    modalities = body.get("modalities") or []
+    route = agent.router.route(text, sensors, modalities)
+    return {"ok": True, **route.to_dict()}
+
+
+@app.get("/api/edge-cloud/audit")
+async def api_edge_cloud_audit():
+    """上云数据审计（数据最小化原则）：记录每条上云数据的脱敏情况。"""
+    return {
+        "ok": True,
+        "upload_count": agent.router.guard.upload_count(),
+        "audit": agent.router.guard.audit_snapshot(),
+    }
+
+
+@app.post("/api/edge-cloud/vision")
+async def api_edge_cloud_vision(body: dict):
+    """端侧视觉事件检测演示（画面本地处理，不上云）。
+
+    body: {scene_hint: "跌倒"/"有人"/"无人"/"隐患"}
+    """
+    from .multimodal import VisionEventDetector
+    detector = VisionEventDetector()
+    event = detector.detect(body.get("scene_hint", ""))
+    if event is None:
+        return {"ok": True, "event": None, "alert": None, "note": "未检测到视觉事件"}
+    return {"ok": True, "event": event.to_dict(), "alert": detector.event_to_alert(event)}
+
+
 # ---------- MCP 协议接入 ----------
 @app.post("/mcp")
 async def mcp_endpoint(request: Request):
