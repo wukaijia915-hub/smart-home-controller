@@ -58,6 +58,7 @@ class Device:
     commands: list = field(default_factory=list)     # 可用命令
     state: str = "online"                            # online / offline / fault
     protocol: str = "virtual"                        # wifi / ble / zigbee / matter / virtual
+    twin_of: str = ""                                # 孪生对中的实体设备 id（可执行数字孪生，空=非孪生体）
 
     def get(self, name: str) -> Any:
         attr = self.attributes.get(name)

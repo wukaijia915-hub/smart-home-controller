@@ -1,0 +1,68 @@
+{
+  "routes": [
+    {
+      "id": "fall_alert",
+      "desc": "跌倒看护：端侧视觉检测到跌倒 → 开灯 + 数字人主动告警（60s 冷却防重复）",
+      "cooldown_seconds": 60,
+      "match": {
+        "event_types": ["fall_detected"],
+        "severity_at_least": "critical"
+      },
+      "actions": [
+        {
+          "type": "device",
+          "device_id": "light_living_01",
+          "command": "set_brightness",
+          "params": {"brightness": 80}
+        },
+        {
+          "type": "alert",
+          "message_template": "⚠️ 端侧视觉检测到有人跌倒，已联动开启客厅灯，请及时查看。"
+        }
+      ]
+    },
+    {
+      "id": "leave_home",
+      "desc": "离家节能：检测到人员离开 → 关闭客厅灯光与电视（300s 冷却）",
+      "cooldown_seconds": 300,
+      "match": {
+        "event_types": ["no_person"]
+      },
+      "actions": [
+        {
+          "type": "device",
+          "device_id": "light_living_01",
+          "command": "turn_off",
+          "params": {}
+        },
+        {
+          "type": "device",
+          "device_id": "light_living_02",
+          "command": "turn_off",
+          "params": {}
+        },
+        {
+          "type": "device",
+          "device_id": "tv_living_01",
+          "command": "turn_off",
+          "params": {}
+        }
+      ]
+    },
+    {
+      "id": "hazard_alert",
+      "desc": "隐患预警：检测到安全隐患 → 数字人告警（仅提醒，不改设备）",
+      "cooldown_seconds": 120,
+      "match": {
+        "event_types": ["safety_hazard"],
+        "severity_at_least": "warning"
+      },
+      "actions": [
+        {
+          "type": "alert",
+          "message_template": "⚠️ 端侧检测到安全隐患（如明火/水渍），建议立即检查。"
+        }
+      ]
+    }
+  ]
+}

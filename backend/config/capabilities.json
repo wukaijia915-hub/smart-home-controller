@@ -1,0 +1,186 @@
+{
+  "capabilities": [
+    {
+      "name": "lighting.set_brightness",
+      "description": "调节灯具亮度（0-100%）",
+      "device_categories": ["light"],
+      "command": "set_brightness",
+      "params": {"brightness": 80},
+      "aliases": [
+        {"keyword": "太亮", "params": {"brightness": 20}},
+        {"keyword": "调暗", "params": {"brightness": 20}},
+        {"keyword": "调亮", "params": {"brightness": 90}},
+        {"keyword": "太暗", "params": {"brightness": 90}}
+      ]
+    },
+    {
+      "name": "lighting.set_color_temp",
+      "description": "调节灯光色温（2700-6500K）",
+      "device_categories": ["light"],
+      "command": "set_color_temp",
+      "params": {"color_temp": 4000},
+      "aliases": [
+        {"keyword": "暖光", "params": {"color_temp": 3000}},
+        {"keyword": "白光", "params": {"color_temp": 5000}}
+      ]
+    },
+    {
+      "name": "lighting.turn_on",
+      "description": "开灯",
+      "device_categories": ["light"],
+      "command": "turn_on",
+      "params": {},
+      "aliases": [
+        {"keyword": "开灯"},
+        {"keyword": "打开灯"}
+      ]
+    },
+    {
+      "name": "lighting.turn_off",
+      "description": "关灯",
+      "device_categories": ["light"],
+      "command": "turn_off",
+      "params": {},
+      "aliases": [
+        {"keyword": "关灯"},
+        {"keyword": "关闭灯"}
+      ]
+    },
+    {
+      "name": "climate.set_temperature",
+      "description": "设定空调温度（16-30℃）",
+      "device_categories": ["ac"],
+      "command": "set_temperature",
+      "params": {"temperature": 24},
+      "aliases": [
+        {"keyword": "好热", "params": {"temperature": 24}},
+        {"keyword": "太热", "params": {"temperature": 24}},
+        {"keyword": "热了", "params": {"temperature": 24}},
+        {"keyword": "好冷", "params": {"temperature": 28}},
+        {"keyword": "太冷", "params": {"temperature": 28}},
+        {"keyword": "冷了", "params": {"temperature": 28}}
+      ]
+    },
+    {
+      "name": "climate.set_mode",
+      "description": "设定空调模式（cool/heat/fan/auto）",
+      "device_categories": ["ac"],
+      "command": "set_mode",
+      "params": {"mode": "auto"},
+      "aliases": [
+        {"keyword": "制冷", "params": {"mode": "cool"}},
+        {"keyword": "制热", "params": {"mode": "heat"}},
+        {"keyword": "除湿", "params": {"mode": "auto"}}
+      ]
+    },
+    {
+      "name": "window.set_position",
+      "description": "设定窗帘开合度（0-100%）",
+      "device_categories": ["curtain"],
+      "command": "set_position",
+      "params": {"position": 100},
+      "aliases": [
+        {"keyword": "窗帘开一半", "params": {"position": 50}},
+        {"keyword": "开一半窗帘", "params": {"position": 50}}
+      ]
+    },
+    {
+      "name": "window.open",
+      "description": "打开窗帘",
+      "device_categories": ["curtain"],
+      "command": "open",
+      "params": {},
+      "aliases": [
+        {"keyword": "开窗帘"},
+        {"keyword": "拉开窗帘"}
+      ]
+    },
+    {
+      "name": "window.close",
+      "description": "关闭窗帘",
+      "device_categories": ["curtain"],
+      "command": "close",
+      "params": {},
+      "aliases": [
+        {"keyword": "关窗帘"},
+        {"keyword": "拉上窗帘"}
+      ]
+    },
+    {
+      "name": "media.set_volume",
+      "description": "调节电视/音箱音量（0-100%）",
+      "device_categories": ["tv", "speaker"],
+      "command": "set_volume",
+      "params": {"volume": 30},
+      "aliases": [
+        {"keyword": "静音", "params": {"volume": 0}},
+        {"keyword": "小声点", "params": {"volume": 15}},
+        {"keyword": "大声点", "params": {"volume": 60}}
+      ]
+    },
+    {
+      "name": "climate.set_fan_speed",
+      "description": "调节风扇档位（low/mid/high）",
+      "device_categories": ["fan"],
+      "command": "set_speed",
+      "params": {"speed": "mid"},
+      "aliases": [
+        {"keyword": "风大点", "params": {"speed": "high"}},
+        {"keyword": "风小点", "params": {"speed": "low"}}
+      ]
+    },
+    {
+      "name": "climate.set_humidity",
+      "description": "设定加湿器目标湿度（30-80%）",
+      "device_categories": ["humidifier"],
+      "command": "set_target",
+      "params": {"target": 55},
+      "aliases": [
+        {"keyword": "太干", "params": {"target": 65}},
+        {"keyword": "干燥", "params": {"target": 65}}
+      ]
+    },
+    {
+      "name": "security.lock",
+      "description": "门锁上锁",
+      "device_categories": ["lock"],
+      "command": "lock",
+      "params": {},
+      "aliases": [
+        {"keyword": "锁门"},
+        {"keyword": "上锁"}
+      ]
+    },
+    {
+      "name": "security.unlock",
+      "description": "门锁解锁",
+      "device_categories": ["lock"],
+      "command": "unlock",
+      "params": {},
+      "aliases": [
+        {"keyword": "开门锁"},
+        {"keyword": "解锁"}
+      ]
+    },
+    {
+      "name": "appliance.clean",
+      "description": "启动扫地机器人清洁",
+      "device_categories": ["robot_vacuum"],
+      "command": "start_clean",
+      "params": {},
+      "aliases": [
+        {"keyword": "扫地"},
+        {"keyword": "打扫"},
+        {"keyword": "清扫"}
+      ]
+    },
+    {
+      "name": "safety.alert",
+      "description": "主动告警（数字人播报，不直接改设备）",
+      "device_categories": [],
+      "command": "",
+      "params": {"level": "warning"},
+      "aliases": []
+    }
+  ]
+}

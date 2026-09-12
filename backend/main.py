@@ -58,6 +58,26 @@ simulator = SensorSimulator(registry)
 from .tools import tool_registry
 tool_registry.build_from_devices(registry)
 
+# ---- 能力注册表 + 事件路由引擎（可执行数字孪生 + 证据链闭环） ----
+from .capabilities import CapabilityRegistry
+from .event_routes import EventRouter
+
+capability_registry = CapabilityRegistry()
+event_router = EventRouter(registry, manager, state_store=None)
+
+
+def _twin_sync(device, attrs: dict) -> dict:
+    """孪生同步回调：虚拟设备属性 → 实体侧占位适配器 → 回读一致性证据。"""
+    twin = capability_registry.get_twin(device.device_id)
+    if twin is None:
+        return None
+    twin.apply(attrs)
+    # 实体侧回读全部当前属性，比对虚拟预期态
+    return twin.readback(attrs)
+
+
+registry.set_twin_sync(_twin_sync)
+
 _loop = None  # 主事件循环引用（跨线程广播用）
 
 
@@ -162,6 +182,30 @@ async def api_config():
         "scenes": {k: v["desc"] for k, v in SCENES.items()},
         "llm_configured": agent.llm.available,
     }
+
+
+@app.get("/api/capabilities")
+async def api_capabilities():
+    """能力注册表：能力清单 + 别名表 + 孪生对（可执行数字孪生）。"""
+    return capability_registry.list_capabilities()
+
+
+@app.post("/api/events/route")
+async def api_events_route(body: dict):
+    """注入结构化事件（如端侧视觉检测结论）并路由为设备动作 + 告警。
+
+    body: {"type": "fall_detected", "source": "edge_vision", "payload": {...}}
+    返回 RouteEvaluation（匹配路由 / 动作结果含 confirmed/delivered 状态与回读证据）。
+    """
+    event = {
+        "type": body.get("type", ""),
+        "source": body.get("source", ""),
+        "payload": body.get("payload") or {},
+    }
+    if not event["type"]:
+        return JSONResponse({"ok": False, "error": "type 不能为空"}, status_code=400)
+    evaluation = await asyncio.to_thread(event_router.route, event)
+    return {"ok": True, **evaluation.to_dict()}
 
 
 @app.post("/api/scene")

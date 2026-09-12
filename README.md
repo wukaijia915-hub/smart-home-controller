@@ -11,6 +11,8 @@
 | 环境仿真 | 昼夜光照循环、温湿度波动、人体红外、空气质量；与设备状态联动（开灯/开窗帘→光照上升、开空调→温度趋稳） |
 | 多模态 Agent | 双层决策：①规则层（场景+设备指令，<100ms）②远端 LLM 推理层（Function Calling 风格结构化输出，配置 API Key 后启用） |
 | 设备抽象层 | Device/Attribute/Command schema + 10 个虚拟设备驱动（参考 Matter cluster / HA entity 模型） |
+| 能力注册表 | 能力契约与设备类别解耦 + 口语别名归一（「好热」→ climate.set_temperature）+ 孪生配对（可执行数字孪生） |
+| 事件路由引擎 | 声明式事件路由（跌倒看护/离家节能/隐患预警）+ 冷却去重 + fan-out 并发 + 回读确认证据链 |
 | 数字人 | 低成本 SVG 形象"小智"+ 说话口型动画 + 状态提示 |
 | 交互 | 自然语言对话（支持一句话多条指令）、6 大场景模式按钮、实时设备状态面板、传感器面板 |
 
@@ -97,6 +99,8 @@ LLM_MODEL=deepseek-chat
 | POST | `/api/scene` | 场景切换 `{"scene":"movie"}` |
 | POST | `/api/control` | 开放接入 SDK：直接控制设备 |
 | POST | `/api/edge` | 边缘场景：模拟设备离线/故障 |
+| GET | `/api/capabilities` | 能力清单 + 口语别名表 + 孪生对状态（可执行数字孪生） |
+| POST | `/api/events/route` | 注入结构化事件，路由为设备动作 + 告警（含回读证据） |
 | WS | `/ws` | 实时双向（指令上行 + 状态/传感器/回复下行） |
 
 ## 七、验证与测试
@@ -104,6 +108,12 @@ LLM_MODEL=deepseek-chat
 ```bash
 # 冒烟测试：设备层 + 规则 Agent 决策
 python tests_smoke.py
+# 端云协同 + 多模态测试（19 项断言）
+python tests_edge_cloud.py
+# 能力注册表 + 事件路由 + 执行契约测试（30 项断言）
+python tests_capabilities.py
+# 可执行数字孪生 + 证据链 5 场景演示
+python demo_capability_route.py
 ```
 
 已通过验证：
@@ -111,6 +121,9 @@ python tests_smoke.py
 - 场景/指令规则命中（含一句话多指令）
 - WebSocket 实时链路（init → chat → device_state / agent_reply）
 - 传感器仿真动态更新与设备联动（开窗帘→光照上升）
+- 口语别名归一（好热/太亮/拉上窗帘 → 能力契约）与设备类别契约筛选
+- 执行回读确认三态（confirmed/delivered/failed）+ 孪生配对一致性证据
+- 事件路由 fan-out + 冷却去重（跌倒看护/离家节能）
 - 浏览器端 3D 渲染、对话交互、场景按钮（Chrome 实测）
 
 ## 八、后续路线（对应方案 V2.0 第三阶段起）
