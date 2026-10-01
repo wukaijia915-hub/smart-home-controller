@@ -11,17 +11,23 @@ from .devices.registry import DeviceRegistry
 from .edge_cloud import DecisionRouter
 from .knowledge.rag import kb
 from .llm_client import LLMClient
+from .skills import skill_manager
 from .state import StateStore
 
 
 class HomeAgent:
-    def __init__(self, registry: DeviceRegistry):
+    def __init__(self, registry: DeviceRegistry, capabilities=None):
         self.registry = registry
         self.llm = LLMClient()
         self.store = StateStore()
         self.router = DecisionRouter()   # 端云协同路由（隐私分级 + 端/云决策）
-        self.root = RootAgent(registry, self.store, self.llm)
-        self.manager = ManagerAgent(registry, self.store, self.llm)
+        self.capabilities = capabilities
+        # 漏斗④（技能）与漏斗⑤（能力契约）需要这两个注册表；
+        # 不注入时对应漏斗自动跳过，不影响其余决策路径。
+        self.root = RootAgent(registry, self.store, self.llm,
+                              capabilities=capabilities, skills=skill_manager)
+        self.manager = ManagerAgent(registry, self.store, self.llm,
+                                    capabilities=capabilities)
         self.session: list[dict] = []   # 短期会话记忆
         self.history: list[dict] = []   # 完整历史（界面展示用）
         self.sensors: dict = {}         # 当前传感器数据（main.py 注入）

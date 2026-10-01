@@ -134,18 +134,23 @@ LLM_MODEL=deepseek-chat
 ## 七、验证与测试
 
 ```bash
-# 全量门禁（每个阶段收尾必须六脚本全绿）
-python tests_smoke.py         # 设备层 + 规则决策冒烟
-python tests_agents.py        # 租约 / 版本校验 / 幻觉拦截 / 高危二次确认
-python tests_capabilities.py  # 能力注册表 + 事件路由 + 执行契约（30 项断言）
-python tests_edge_cloud.py    # 隐私分级 / 脱敏 / 端云路由（19 项断言）
-python tests_error.py         # 7 类异常与边界输入（26 项断言）
-python tests_performance.py --api   # 5 项量化验收指标
+# 全量门禁（每个阶段收尾必须七脚本全绿）
+LLM_OFFLINE=1 python tests_smoke.py         # 设备层 + 规则决策冒烟
+LLM_OFFLINE=1 python tests_agents.py        # 租约 / 版本校验 / 幻觉拦截 / 高危二次确认
+LLM_OFFLINE=1 python tests_capabilities.py  # 能力注册表 + 事件路由 + 执行契约（30 项）
+LLM_OFFLINE=1 python tests_edge_cloud.py    # 隐私分级 / 脱敏 / 端云路由（19 项）
+LLM_OFFLINE=1 python tests_error.py         # 7 类异常与边界输入（26 项）
+LLM_OFFLINE=1 python tests_funnel.py        # 五级意图漏斗优先级 + 护栏不被绕过（30 项）
+LLM_OFFLINE=1 python tests_performance.py   # 量化验收指标
 
 # 演示脚本
 python demo_capability_route.py     # 可执行数字孪生 + 证据链 5 场景
 python demo_edge_cloud.py           # 端云协同 5 场景
 ```
+
+**门禁必须带 `LLM_OFFLINE=1`**：否则测试会打真实网络请求，结果随模型输出波动而 flaky
+（已实测复现：模型返回 JSON 数组时 `manager._llm_translate` 曾崩溃）。
+`LLM_OFFLINE=1` 强制不发起任何网络请求，让回归只测我们自己的代码。
 
 **离线模式**：加 `LLM_OFFLINE=1` 可强制不发起任何网络请求，全部走规则与结构化路径。
 用于「断网演练」演示，也用于让回归测试可复现（不依赖网络与模型输出波动）：
@@ -160,12 +165,15 @@ LLM_OFFLINE=1 python tests_performance.py
 |---|---|---|---|
 | 规则层响应延迟 | < 100ms | 平均 7.4ms / p95 18ms | ✅ |
 | 设备控制成功率 | ≥ 95% | 64/64 = 100% | ✅ |
-| 决策准确率（标准场景集 S1–S11） | ≥ 90% | **离线 93.3% / 在线 100%** | ✅ |
+| 决策准确率（标准场景集 S1–S11） | ≥ 90% | 离线 100%（90/90） | ✅ |
 | 前端渲染帧率 | ≥ 30 FPS | 待浏览器实测 | — |
+| 慢环 LLM 端到端延迟 | < 5s | **11.6–14.0s** | ❌ 见下 |
 
-> **关于决策准确率的说明**：离线 93.3% 是规则层的真实覆盖度；未覆盖的 2 个口语变体
-> （「我走了」「看个片」）在联网时由 LLM 兜底，故在线为 100%。这一分层数据比笼统
-> 宣称 100% 更有意义——它恰好标出了规则层与 LLM 层各自的能力边界。
+> **关于慢环延迟（2026-10-02 实测）**：单次调用 5.2–8.7s，而最小请求基线仅 642ms ——
+> 瓶颈在**模型生成速度**，不在网络、调用次数或 prompt 体积。Manager 的逐子任务翻译已
+> 改为批量翻译（LLM 调用数 `1+N` → `1+1`，trace 已验证生效），但墙上时间被单次延迟主导。
+> 故本项目**不声称慢环 P95 <5s**，而是走「预算化降级、P95 有界」；换更快模型或本地推理
+> 即可线性改善。规则层 7.4ms 是确定性路径，无外部依赖。
 
 ## 八、后续路线
 

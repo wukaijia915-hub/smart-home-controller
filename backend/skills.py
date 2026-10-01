@@ -35,7 +35,11 @@ BUILTIN_SKILLS: dict[str, dict] = {
         "id": "movie_night",
         "name": "电影之夜",
         "description": "关闭主灯、拉上窗帘、打开电视并调低音量、空调调至 24 度",
-        "trigger_keywords": ["电影之夜", "看大片", "影院模式"],
+        # 触发词留空：本技能是 scenes.py 中 movie 场景的加强版，若配"看电影"类
+        # 触发词会被场景规则（漏斗②）先截胡，成为永不命中的死条目。
+        # 保留它作为「多设备序列」的格式示例，可通过 API 显式执行，或由用户
+        # 复制后自定义触发词。技能触发词与场景关键词的重叠由 tests_skills.py 校验。
+        "trigger_keywords": [],
         "actions": [
             {"device_id": "light_living_01", "command": "turn_off", "params": {}},
             {"device_id": "light_living_02", "command": "turn_off", "params": {}},
@@ -51,7 +55,8 @@ BUILTIN_SKILLS: dict[str, dict] = {
         "id": "good_night",
         "name": "晚安模式",
         "description": "关闭客厅全部设备、卧室灯调至微光、卧室空调设为 26 度",
-        "trigger_keywords": ["晚安模式", "就寝模式", "我要睡了"],
+        # 触发词留空：同 movie_night（"晚安/睡了" 已被 night 场景规则占用）
+        "trigger_keywords": [],
         "actions": [
             {"device_id": "light_living_01", "command": "turn_off", "params": {}},
             {"device_id": "light_living_02", "command": "turn_off", "params": {}},
@@ -67,7 +72,8 @@ BUILTIN_SKILLS: dict[str, dict] = {
         "id": "welcome_home",
         "name": "欢迎回家",
         "description": "打开客厅灯、拉开窗帘、空调调至 24 度",
-        "trigger_keywords": ["欢迎回家模式", "到家模式"],
+        # 触发词留空：同 movie_night（"回家/到家" 已被 home 场景规则占用）
+        "trigger_keywords": [],
         "actions": [
             {"device_id": "light_living_01", "command": "set_brightness", "params": {"brightness": 80}},
             {"device_id": "curtain_living_01", "command": "open", "params": {}},
@@ -76,11 +82,27 @@ BUILTIN_SKILLS: dict[str, dict] = {
         "enabled": True,
         "built_in": True,
     },
+    # 用户自定义技能的示例：触发词刻意避开场景规则关键词，能被漏斗④ 命中。
+    "reading_mode": {
+        "id": "reading_mode",
+        "name": "阅读模式",
+        "description": "客厅灯调至 70% 暖白光、关电视、空调 25 度静音运行",
+        "trigger_keywords": ["阅读模式", "看书模式", "我要看书"],
+        "actions": [
+            {"device_id": "light_living_01", "command": "set_brightness", "params": {"brightness": 70}},
+            {"device_id": "light_living_01", "command": "set_color_temp", "params": {"color_temp": 4500}},
+            {"device_id": "tv_living_01", "command": "turn_off", "params": {}},
+            {"device_id": "ac_living_01", "command": "set_temperature", "params": {"temperature": 25}},
+            {"device_id": "ac_living_01", "command": "set_fan_speed", "params": {"fan_speed": "low"}},
+        ],
+        "enabled": True,
+        "built_in": True,
+    },
 }
 
-# 注意：技能触发词刻意避开场景规则关键词（「我回来了」「到家了」「睡觉」等）。
-# 规则层漏斗②（场景）优先于漏斗④（技能），重叠的触发词永远不会被走到。
-# 用 tests_skills.py 校验无重叠。
+# 触发词约束：技能（漏斗④）在场景（漏斗②）之后，重叠的触发词永远不会被走到。
+# 内置的三个技能因与场景语义重复，触发词一律留空；reading_mode 演示了
+# 一个不重叠的自定义技能应该长什么样。tests_skills.py 会校验这一约束。
 
 
 class SkillManager:
@@ -90,27 +112,27 @@ class SkillManager:
 
     # ---------- 持久化 ----------
     def _load(self) -> None:
-        if not os.path.exists(SKILLS_FILE):
-            self._skills = json.loads(json.dumps(BUILTIN_SKILLS))
-            self._save()
-            return
-        try:
-            with open(SKILLS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (OSError, json.JSONDecodeError) as e:
-            logger.warning(f"技能库读取失败，回退内置技能: {e}")
-            self._skills = json.loads(json.dumps(BUILTIN_SKILLS))
-            self._save()
-            return
+        loaded: dict[str, dict] = {}
+        if os.path.exists(SKILLS_FILE):
+            try:
+                with open(SKILLS_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                version = data.get("format_version") if isinstance(data, dict) else None
+                skills = data.get("skills") if isinstance(data, dict) else data
+                if version == FORMAT_VERSION and isinstance(skills, dict):
+                    loaded = skills
+                else:
+                    logger.warning(
+                        f"技能库格式为 v{version}（当前 v{FORMAT_VERSION}），丢弃旧数据")
+            except (OSError, json.JSONDecodeError) as e:
+                logger.warning(f"技能库读取失败，丢弃旧数据: {e}")
 
-        version = data.get("format_version") if isinstance(data, dict) else None
-        skills = data.get("skills") if isinstance(data, dict) else data
-        if version != FORMAT_VERSION or not isinstance(skills, dict):
-            logger.warning(f"技能库格式为 v{version}（当前 v{FORMAT_VERSION}），重建为内置技能")
-            self._skills = json.loads(json.dumps(BUILTIN_SKILLS))
-            self._save()
-            return
-        self._skills = skills
+        # 内置技能始终以代码为准覆盖：否则改了 BUILTIN_SKILLS 也不会生效
+        # （磁盘上的旧副本会把它盖回去）。用户自建技能原样保留。
+        merged = {k: v for k, v in loaded.items() if not v.get("built_in")}
+        merged.update(json.loads(json.dumps(BUILTIN_SKILLS)))
+        self._skills = merged
+        self._save()
 
     def _save(self) -> None:
         os.makedirs(os.path.dirname(SKILLS_FILE), exist_ok=True)

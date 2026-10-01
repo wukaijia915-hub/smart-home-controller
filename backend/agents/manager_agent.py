@@ -29,17 +29,24 @@ class ExecutionReport:
 
 
 class ManagerAgent:
-    def __init__(self, registry: DeviceRegistry, store: StateStore, llm):
+    def __init__(self, registry: DeviceRegistry, store: StateStore, llm, capabilities=None):
         self.registry = registry
         self.store = store
         self.llm = llm
+        self.capabilities = capabilities
 
     def run(self, task_plan, history: Optional[list] = None) -> ExecutionReport:
         trace = [TraceStep("ground", f"状态版本 v{task_plan.state_version}，{len(task_plan.sub_tasks)} 个子任务")]
         executed, results = [], []
 
-        for sub_task in task_plan.sub_tasks:
-            actions = self._translate(sub_task, history, trace)
+        # ★ 先批量翻译全部子任务，再逐条执行。
+        #   原实现是「翻译一个→执行一个」，每个 LLM 来源的子任务各调一次模型，
+        #   一次 decide() 的 LLM 调用数达 1+N（Root 1 次 + Manager N 次）。
+        #   实测 glm-4-flash 单次 2-3s，3 个子任务就是 13-16s，远超 5s 目标。
+        #   合并为一次批量调用后降到 1+1=2 次。
+        plans = self._translate_all(task_plan.sub_tasks, history, trace)
+
+        for sub_task, actions in plans:
             for action in actions:
                 # 签发租约（绑定 Root 批准的 plan 版本）
                 lease = self._issue_lease(sub_task, action, task_plan)
@@ -82,13 +89,111 @@ class ManagerAgent:
                                trace=trace, requires_confirmation=False)
 
     # ---------- 翻译 ----------
+    def _translate_all(self, sub_tasks, history, trace) -> list[tuple]:
+        """批量翻译所有子任务，返回 [(sub_task, actions), ...]。
+
+        三级：规则/技能已带具体动作 → 能力契约确定性查表 → 剩余目标合并为一次 LLM 调用。
+        只有真正落到第三级的才产生网络开销。
+        """
+        resolved: list[Optional[list]] = [None] * len(sub_tasks)
+        pending: list[int] = []
+
+        for i, sub_task in enumerate(sub_tasks):
+            if sub_task.source == "rule":
+                trace.append(TraceStep("propose", f"规则命中：{sub_task.device_id}.{sub_task.command}"))
+                resolved[i] = [{"device_id": sub_task.device_id, "command": sub_task.command,
+                                "params": sub_task.params}]
+                continue
+            local = self._resolve_by_capability(sub_task.goal, trace)
+            if local is not None:
+                resolved[i] = local
+                continue
+            pending.append(i)
+
+        if pending:
+            goals = [sub_tasks[i].goal for i in pending]
+            trace.append(TraceStep("propose", f"LLM 批量翻译 {len(goals)} 个目标（一次调用）"))
+            batch = self._llm_translate_batch(goals, history)
+            if batch is None:
+                # 批量调用失败 → 逐个兜底，保持原有的可用性（只是更慢）
+                trace.append(TraceStep("propose", "批量翻译失败，回退为逐个翻译", ok=False))
+                batch = [self._llm_translate(g, history) for g in goals]
+            for idx, actions in zip(pending, batch):
+                resolved[idx] = actions or []
+
+        return [(sub_task, resolved[i] or []) for i, sub_task in enumerate(sub_tasks)]
+
+    def _resolve_by_capability(self, goal: str, trace) -> Optional[list[dict]]:
+        """能力契约确定性查表（0ms）。命中返回动作列表，未命中返回 None。"""
+        if self.capabilities is None or not goal:
+            return None
+        cap = self.capabilities.resolve(goal)
+        if not cap or not cap.get("command"):
+            return None
+        devices = self.capabilities.find_devices(cap["capability"], self.registry)
+        if not devices:
+            return None
+        target = devices[0]
+        trace.append(TraceStep("propose", f"能力映射：{cap['capability']} → {target.name}"))
+        return [{"device_id": target.device_id, "command": cap["command"],
+                 "params": dict(cap["params"])}]
+
     def _translate(self, sub_task, history, trace) -> list[dict]:
         if sub_task.source == "rule":
             trace.append(TraceStep("propose", f"规则命中：{sub_task.device_id}.{sub_task.command}"))
             return [{"device_id": sub_task.device_id, "command": sub_task.command, "params": sub_task.params}]
-        # LLM 路径：把高层 goal 翻译成具体动作（第二次 LLM 调用）
+
+        # ★ 能力契约确定性查表优先（0ms）：capabilities.json 已建立
+        #   「能力 → 命令 + 参数默认值」映射，能查到的目标不需要再花一次 LLM 调用。
+        #   这是把慢环 LLM 调用次数从 N+1 降到 1 的关键一步。
+        if self.capabilities is not None:
+            cap = self.capabilities.resolve(sub_task.goal)
+            if cap and cap.get("command"):
+                devices = self.capabilities.find_devices(cap["capability"], self.registry)
+                if devices:
+                    target = devices[0]
+                    trace.append(TraceStep(
+                        "propose", f"能力映射：{cap['capability']} → {target.name}"))
+                    return [{"device_id": target.device_id, "command": cap["command"],
+                             "params": dict(cap["params"])}]
+
+        # 兜底：LLM 一次性翻译（第二次 LLM 调用）
         trace.append(TraceStep("propose", f"LLM 翻译目标：{sub_task.goal}"))
         return self._llm_translate(sub_task.goal, history)
+
+    def _llm_translate_batch(self, goals: list[str], history: Optional[list]) -> Optional[list[list[dict]]]:
+        """一次调用翻译多个目标。返回与 goals 等长的动作列表列表；失败返回 None。
+
+        用编号列表而不是 JSON 数组传输入，模型对下标对齐的遵循度更好；
+        返回后仍严格校验条数，不足/多余一律判失败并回退逐个翻译。
+        """
+        if not goals:
+            return []
+        numbered = "\n".join(f"{i + 1}. {g}" for i, g in enumerate(goals))
+        # 响应里不回显 goal：延迟主要由输出 token 数决定，省掉回显可少生成约 20% token
+        user = (
+            f"请把下面 {len(goals)} 个操作目标分别翻译为具体设备动作：\n{numbered}\n\n"
+            f'输出 JSON，格式：{{"results": [{{"actions": [{{"device_id": "...", '
+            f'"command": "...", "params": {{}}}}]}}, ...]}}\n'
+            f"results 与上面编号一一对应，数量恰好为 {len(goals)}，不要回显目标文字。"
+        )
+        messages = [{"role": "system", "content": self._build_system_prompt()},
+                    {"role": "user", "content": user}]
+        result = self.llm.chat_json(messages, max_tokens=700, context_text=" ".join(goals))
+        if not isinstance(result, dict):
+            return None
+        rows = result.get("results")
+        if not isinstance(rows, list) or len(rows) != len(goals):
+            return None
+        out: list[list[dict]] = []
+        for row in rows:
+            actions = row.get("actions") if isinstance(row, dict) else None
+            if not isinstance(actions, list):
+                out.append([])
+                continue
+            out.append([a for a in actions
+                        if isinstance(a, dict) and a.get("device_id") and a.get("command")])
+        return out
 
     def _llm_translate(self, goal: str, history: Optional[list]) -> list[dict]:
         system = self._build_system_prompt()

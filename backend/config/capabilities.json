@@ -175,6 +175,51 @@
       ]
     },
     {
+      "name": "kitchen.gas_stove_on",
+      "description": "打开燃气灶",
+      "device_categories": ["gas_stove"],
+      "command": "turn_on",
+      "params": {},
+      "aliases": [
+        {"keyword": "打开燃气灶"},
+        {"keyword": "开燃气灶"},
+        {"keyword": "点燃气灶"}
+      ]
+    },
+    {
+      "name": "kitchen.gas_stove_off",
+      "description": "关闭燃气灶",
+      "device_categories": ["gas_stove"],
+      "command": "turn_off",
+      "params": {},
+      "aliases": [
+        {"keyword": "关闭燃气灶"},
+        {"keyword": "关燃气灶"}
+      ]
+    },
+    {
+      "name": "kitchen.range_hood",
+      "description": "打开抽油烟机",
+      "device_categories": ["range_hood"],
+      "command": "turn_on",
+      "params": {},
+      "aliases": [
+        {"keyword": "打开油烟机"},
+        {"keyword": "开油烟机"}
+      ]
+    },
+    {
+      "name": "security.camera_stream",
+      "description": "开启摄像头直播",
+      "device_categories": ["camera"],
+      "command": "start_stream",
+      "params": {},
+      "aliases": [
+        {"keyword": "打开摄像头"},
+        {"keyword": "开摄像头"}
+      ]
+    },
+    {
       "name": "safety.alert",
       "description": "主动告警（数字人播报，不直接改设备）",
       "device_categories": [],

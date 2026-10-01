@@ -49,24 +49,26 @@ class ConnectionManager:
                 self.disconnect(ws)
 
 
-registry = DeviceRegistry()
-manager = ConnectionManager()
-agent = HomeAgent(registry)
-simulator = SensorSimulator(registry)
-
-# 初始化标准化工具注册表
-from .tools import tool_registry
-tool_registry.build_from_devices(registry)
-
 # ---- 能力注册表 + 事件路由引擎（可执行数字孪生 + 证据链闭环） ----
 from .capabilities import CapabilityRegistry
 from .event_routes import EventRouter
+
+registry = DeviceRegistry()
+manager = ConnectionManager()
 
 capability_registry = CapabilityRegistry()
 # 启动即配对孪生：为所有实体协议设备建立「虚拟预期态 ↔ 实体实测态」对照关系。
 # 不做这一步的话 twin_pairs 恒为空 → registry.control() 的 result["twin"] 永不出现，
 # 即「可执行数字孪生」在运行的系统里是死的（仅 tests/demo 手动配对时才活）。
 _twin_paired = capability_registry.auto_pair(registry.all())
+
+# 能力注册表在 Agent 之前创建：Root 的漏斗⑤ 与 Manager 的能力查表都要用它
+agent = HomeAgent(registry, capabilities=capability_registry)
+simulator = SensorSimulator(registry)
+
+# 初始化标准化工具注册表
+from .tools import tool_registry
+tool_registry.build_from_devices(registry)
 
 # state_store 必须注入：否则事件路径改状态不递增版本号，租约版本会与真相源脱节
 event_router = EventRouter(registry, manager, state_store=agent.store)
