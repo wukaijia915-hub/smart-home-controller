@@ -178,6 +178,7 @@ def _device_from_config(cfg: dict) -> Device:
         attributes=attrs,
         commands=cfg.get("commands", []),
         protocol=cfg.get("protocol", "virtual"),
+        twin_of=cfg.get("twin_of", ""),
     )
 
 

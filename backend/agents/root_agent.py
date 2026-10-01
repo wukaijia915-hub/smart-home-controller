@@ -287,7 +287,8 @@ class RootAgent:
             messages.insert(-1, m)
 
         result = self.llm.chat_json(messages, max_tokens=500, context_text=text)
-        if not result:
+        # LLM 返回的 JSON 属不可信输入：必须是对象，字段类型也要逐一防御
+        if not isinstance(result, dict):
             return None
 
         is_command = bool(result.get("is_command", False))
@@ -296,10 +297,13 @@ class RootAgent:
             return TaskPlan(is_command=False, source="llm", reply=reply,
                             sub_tasks=[], state_version=self.store.version)
 
+        raw_tasks = result.get("sub_tasks", [])
+        if not isinstance(raw_tasks, list):
+            raw_tasks = []
         sub_tasks = [
             SubTask(source="llm", goal=t.get("goal", ""), category=t.get("category", ""))
-            for t in result.get("sub_tasks", [])
-            if t.get("goal")
+            for t in raw_tasks
+            if isinstance(t, dict) and t.get("goal")
         ]
         if not sub_tasks:
             return TaskPlan(is_command=False, source="llm", reply=reply,

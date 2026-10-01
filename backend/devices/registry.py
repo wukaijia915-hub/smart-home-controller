@@ -171,8 +171,16 @@ class DeviceRegistry:
 
 
 def _command_target_value(command: str):
-    """由命令语义确定回读目标值（on→布尔，position→数值，status→枚举字符串）。"""
-    if command in ("turn_on", "lock", "start_clean", "play_music", "start_stream"):
+    """由命令语义确定回读目标值（on→布尔，position→数值，status→枚举字符串）。
+
+    注意顺序：枚举语义的命令必须排在布尔分支之前，否则会被截胡
+    （start_clean 曾被 turn_on 分支抢先匹配成 True，导致回读永久无法 confirmed）。
+    """
+    if command == "start_clean":
+        return "cleaning"
+    if command == "stop_clean":
+        return "idle"
+    if command in ("turn_on", "lock", "play_music", "start_stream"):
         return True
     if command in ("turn_off", "unlock", "stop_music", "stop_stream"):
         return False
@@ -180,10 +188,6 @@ def _command_target_value(command: str):
         return 100
     if command == "close":
         return 0
-    if command == "start_clean":
-        return "cleaning"
-    if command == "stop_clean":
-        return "idle"
     return None
 
 
@@ -195,34 +199,3 @@ def _values_equal(actual, expected) -> bool:
         return float(actual) == float(expected)
     except (TypeError, ValueError):
         return False
-
-
-    def set_state(self, device_id: str, state: str):
-        """模拟设备离线/故障/恢复（边缘场景）。"""
-        device = self.devices.get(device_id)
-        if device:
-            device.state = state
-            for cb in self._listeners:
-                try:
-                    cb(device, "__state__", {"ok": True, "state": state})
-                except Exception:
-                    pass
-
-    def reset(self):
-        """重置为默认状态。"""
-        self.devices = {}
-        for d in build_default_devices():
-            self.devices[d.device_id] = d
-
-    def reload(self, new_devices: list):
-        """热重载设备清单：保留已有设备的当前状态，新增设备，移除不存在的设备。"""
-        old = dict(self.devices)
-        self.devices = {}
-        for d in new_devices:
-            if d.device_id in old:
-                # 保留旧设备的当前状态
-                d.state = old[d.device_id].state
-                for k, v in old[d.device_id].attributes.items():
-                    if k in d.attributes:
-                        d.attributes[k].value = v.value
-            self.devices[d.device_id] = d

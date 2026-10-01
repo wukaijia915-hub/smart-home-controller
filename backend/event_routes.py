@@ -46,14 +46,23 @@ class EventRouter:
     """把结构化事件路由为「设备控制 + 告警通知」的声明式动作。"""
 
     def __init__(self, registry, manager=None, routes_path: Optional[Path] = None,
-                 state_store=None):
+                 state_store=None, loop=None):
         self.registry = registry            # DeviceRegistry（含回读确认）
         self.manager = manager              # ConnectionManager（数字人广播，可空）
-        self.state_store = state_store      # StateStore（审计，可空）
+        self.state_store = state_store      # StateStore（审计 + 版本递增，可空）
         self.routes_path = routes_path or CONFIG_PATH
         self.raw: dict[str, Any] = {}
         self._last_action_at: dict[str, float] = {}
+        self._loop = loop                   # 主事件循环（由 lifespan 注入，见 set_loop）
         self.load()
+
+    def set_loop(self, loop) -> None:
+        """注入主事件循环引用。
+
+        必须在 lifespan 中调用：EventRouter 在模块导入期构造，那时还没有运行中的
+        事件循环。缺省时 _invoke_alert 只能返回 "queued"，数字人播报不会真的发出。
+        """
+        self._loop = loop
 
     def load(self) -> None:
         if not self.routes_path.exists():
@@ -136,10 +145,12 @@ class EventRouter:
         device_id = self._resolve_value(spec.get("device_id", ""), event)
         command = self._resolve_value(spec.get("command", ""), event)
         params = {k: self._resolve_value(v, event) for k, v in (spec.get("params", {}) or {}).items()}
-        result = self.registry.control(device_id, command, params)
-        result = dict(result)
+        result = dict(self.registry.control(device_id, command, params))
         result.update({"route_id": route_id, "type": "device"})
         if self.state_store is not None and result.get("ok"):
+            # 必须 bump：否则事件路径改动了设备状态却不递增版本号，
+            # 会让后续用户指令的租约版本与真相源脱节（表现为「指令莫名失效」）。
+            self.state_store.bump()
             self.state_store.record(None, device_id, command, params, result)
         return result
 
@@ -151,32 +162,61 @@ class EventRouter:
             source=event.get("source", ""),
             summary=str((event.get("payload") or {}).get("summary", "") or event.get("type", "")),
         )
-        result = {
+        status = self._broadcast_alert(message)
+        return {
             "route_id": route_id,
             "type": "alert",
             "message": message,
-            "status": "delivered" if self.manager is not None else "queued",
+            "status": status,
         }
-        if self.manager is not None:
+
+    def _broadcast_alert(self, message: str) -> str:
+        """把数字人播报投递回主事件循环，返回投递状态（delivered / queued）。
+
+        按调用上下文分四种情况处理：
+        - 已注入 loop + 处于工作线程（/api/events/route 经 asyncio.to_thread）
+          → run_coroutine_threadsafe
+        - 已注入 loop + 就在该循环线程上（内环告警循环）
+          → create_task，避免 run_coroutine_threadsafe 自锁
+        - 未注入 loop + 当前无运行中循环（纯同步上下文：测试 / 脚本）
+          → asyncio.run 临时循环跑到完成
+        - 未注入 loop + 却有运行中循环
+          → 无法安全跨循环投递，返回 queued（不嵌套建循环）
+
+        旧实现无条件 asyncio.new_event_loop() + run_until_complete，
+        在协程内会触发 "Cannot run the event loop while another loop is running"。
+        """
+        if self.manager is None:
+            return "queued"
+        payload = {
+            "type": "agent_reply",
+            "reply": message,
+            "digital_human": {"emotion": "alert", "action": "speak"},
+            "actions": [],
+            "decision_trace": [],
+            "requires_confirmation": False,
+            "pending_id": "",
+            "pending_action": None,
+        }
+        try:
+            import asyncio
             try:
-                import asyncio
-                loop = asyncio.new_event_loop()
-                try:
-                    loop.run_until_complete(self.manager.broadcast({
-                        "type": "agent_reply",
-                        "reply": message,
-                        "digital_human": {"emotion": "alert", "action": "speak"},
-                        "actions": [],
-                        "decision_trace": [],
-                        "requires_confirmation": False,
-                        "pending_id": "",
-                        "pending_action": None,
-                    }))
-                finally:
-                    loop.close()
-            except Exception:
-                result["status"] = "queued"
-        return result
+                running = asyncio.get_running_loop()
+            except RuntimeError:
+                running = None
+
+            if self._loop is None:
+                if running is not None:
+                    return "queued"
+                asyncio.run(self.manager.broadcast(payload))
+                return "delivered"
+            if running is self._loop:
+                running.create_task(self.manager.broadcast(payload))
+            else:
+                asyncio.run_coroutine_threadsafe(self.manager.broadcast(payload), self._loop)
+            return "delivered"
+        except Exception:
+            return "queued"
 
     # ---------- 模板解析 ----------
     @staticmethod

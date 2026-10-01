@@ -9,7 +9,7 @@ import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -63,7 +63,13 @@ from .capabilities import CapabilityRegistry
 from .event_routes import EventRouter
 
 capability_registry = CapabilityRegistry()
-event_router = EventRouter(registry, manager, state_store=None)
+# 启动即配对孪生：为所有实体协议设备建立「虚拟预期态 ↔ 实体实测态」对照关系。
+# 不做这一步的话 twin_pairs 恒为空 → registry.control() 的 result["twin"] 永不出现，
+# 即「可执行数字孪生」在运行的系统里是死的（仅 tests/demo 手动配对时才活）。
+_twin_paired = capability_registry.auto_pair(registry.all())
+
+# state_store 必须注入：否则事件路径改状态不递增版本号，租约版本会与真相源脱节
+event_router = EventRouter(registry, manager, state_store=agent.store)
 
 
 def _twin_sync(device, attrs: dict) -> dict:
@@ -85,6 +91,7 @@ _loop = None  # 主事件循环引用（跨线程广播用）
 async def lifespan(app: FastAPI):
     global _loop
     _loop = asyncio.get_running_loop()
+    event_router.set_loop(_loop)   # 事件路由的数字人播报需要主循环引用
 
     # 传感器变化 → 广播
     async def sensor_loop():
@@ -137,9 +144,12 @@ async def lifespan(app: FastAPI):
 
     registry.on_change(on_device_change)
 
-    # 初始化定时任务调度器
-    from .scheduler import init_scheduler
-    init_scheduler(app, registry, manager)
+    # 初始化定时任务调度器（apscheduler 为可选依赖：缺失时降级而非启动失败）
+    try:
+        from .scheduler import init_scheduler
+        init_scheduler(app, registry, manager)
+    except ImportError as e:
+        print(f"[调度器] 未启用定时任务（缺少依赖 {e}），请 pip install apscheduler")
 
     task = asyncio.create_task(sensor_loop())
     alert_task = asyncio.create_task(alert_loop())
@@ -365,11 +375,8 @@ async def api_tools_call(body: dict):
     from .tools import tool_registry
     name = body.get("name", "")
     params = body.get("params", {})
-    result = tool_registry.call(name, params)
-    # 设备状态变更后广播
-    if result.get("ok"):
-        await manager.broadcast({"type": "device_state", "devices": registry.get_all_states()})
-    return result
+    # 设备状态变更已由 registry.on_change 回调自动广播，此处无需重复广播
+    return tool_registry.call(name, params)
 
 
 @app.get("/api/tools/log")
@@ -399,10 +406,8 @@ async def api_skills_create(body: dict):
 async def api_skills_execute(skill_id: str):
     """手动执行技能。"""
     from .skills import skill_manager
-    result = skill_manager.execute(skill_id, registry)
-    if result.get("ok"):
-        await manager.broadcast({"type": "device_state", "devices": registry.get_all_states()})
-    return result
+    # 设备状态变更已由 registry.on_change 回调自动广播，此处无需重复广播
+    return skill_manager.execute(skill_id, registry)
 
 
 @app.delete("/api/skills/{skill_id}")

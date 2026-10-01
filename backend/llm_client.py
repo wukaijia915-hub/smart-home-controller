@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -18,6 +19,33 @@ try:
     load_dotenv()
 except Exception:
     pass
+
+logger = logging.getLogger("llm_client")
+
+
+def _parse_json_object(content: str) -> Optional[dict]:
+    """把模型输出解析为 JSON **对象**。解析失败或不是对象一律返回 None。
+
+    容忍两种常见的真实世界偏差：
+    - 被 markdown 代码围栏包裹（```json ... ```）
+    - 前后带解释性文字（截取第一个 { 到最后一个 }）
+    """
+    if not content:
+        return None
+    text = content.strip()
+    fence = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
+    if fence:
+        text = fence.group(1).strip()
+    if not text.startswith("{"):
+        start, end = text.find("{"), text.rfind("}")
+        if start == -1 or end <= start:
+            return None
+        text = text[start:end + 1]
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 # 预设后端配置（OpenAI 兼容协议）
@@ -73,6 +101,13 @@ class LLMBackend:
 
     def chat_json(self, messages: list[dict], temperature: float = 0.2,
                   max_tokens: int = 500) -> Optional[dict]:
+        """返回解析后的 JSON **对象**；任何异常情况一律返回 None。
+
+        契约保证：返回值要么是 dict，要么是 None。
+        （旧实现 `return json.loads(content)` 会把模型输出的 JSON 数组原样返回，
+         调用方 manager_agent._llm_translate 对其调用 .get() 直接 AttributeError。
+          即使请求了 response_format=json_object，模型也不保证遵守。）
+        """
         if not self.is_ready():
             return None
         url = f"{self.base_url}/chat/completions"
@@ -94,12 +129,18 @@ class LLMBackend:
                 return None
             data = resp.json()
             content = data["choices"][0]["message"]["content"]
-            result = json.loads(content)
-            self.fail_count = 0  # 成功重置失败计数
-            return result
         except Exception:
             self._record_failure()
             return None
+
+        result = _parse_json_object(content)
+        if result is None:
+            # 传输正常但模型没按约定返回 JSON 对象：不算后端故障（不累加 fail_count），
+            # 返回 None 让上层降级到结构化兜底路径。
+            logger.warning(f"[{self.name}] 返回内容不是 JSON 对象，已降级")
+            return None
+        self.fail_count = 0  # 成功重置失败计数
+        return result
 
     def _record_failure(self):
         self.fail_count += 1
@@ -107,11 +148,17 @@ class LLMBackend:
 
 
 class LLMClient:
-    """多后端 LLM 客户端，支持自动故障转移和复杂度感知路由。"""
+    """多后端 LLM 客户端，支持自动故障转移和复杂度感知路由。
+
+    环境变量：
+    - `LLM_OFFLINE=1` 强制离线：不发起任何网络请求，全部走规则/结构化解。
+      用于「断网演练」演示，以及让回归测试可复现（不依赖网络与模型输出波动）。
+    """
     def __init__(self):
+        self.offline = os.getenv("LLM_OFFLINE", "").strip() in ("1", "true", "True")
         self.backends: list[LLMBackend] = []
         self._init_backends()
-        self.available = any(b.available for b in self.backends)
+        self.available = (not self.offline) and any(b.available for b in self.backends)
         self.last_used_backend = None
 
     def _init_backends(self):
@@ -171,6 +218,7 @@ class LLMClient:
         """返回各后端状态，用于调试和展示。"""
         return {
             "available": self.available,
+            "offline": self.offline,
             "last_used": self.last_used_backend,
             "backends": [
                 {

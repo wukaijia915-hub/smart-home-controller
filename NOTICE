@@ -1,0 +1,54 @@
+灵犀（LingXi）智能家居数字人中枢
+Copyright 2026 灵犀团队
+
+本产品包含由第三方以开源许可证提供的组件与设计思想。以下逐项列明来源，
+按「直接引用代码」与「参考设计思想后重写」两类分别标注。
+
+================================================================================
+一、参考设计思想后重写的部分（本仓库不含其源代码）
+================================================================================
+
+1) UAgentOS（uagentos-realworld-device-harness）
+   来源：本地获取的开源项目副本 `Desktop/别人的智能家居/uagentos-realworld-device-harness`
+         （Apache License 2.0）。**上游仓库 URL 待补充** —— 合入主分支前请补全，
+         或改为按 Apache-2.0 第 4(d) 条要求的方式保留其 NOTICE 原文。
+   涉及本仓库文件：
+     - backend/devices/registry.py   执行结果三段式状态（confirmed/delivered/failed）
+                                     与回读证据的设计思想
+     - backend/capabilities.py       能力注册表 + 别名归一 + 孪生配对的设计思想
+     - backend/event_routes.py       声明式事件路由 + 冷却去重 + fan-out 的设计思想
+   说明：上述三处均为按灵犀自身架构重写（Python dataclass + JSON 配置 +
+         DeviceRegistry 回读确认 + ConnectionManager 广播），未复制其源代码，
+         数据结构与实现方式（YAML + namespace）均不同。
+
+2) 心镜 · Xinjing AIGC Agent Platform
+   来源：心镜迭代（主体）/心镜AIGC5.1/Xinjing-AIGC-Agent-Platform
+         （Apache License 2.0）
+   状态：**待移植**。以下机制将在后续阶段从心镜移植到本仓库，
+         届时本 NOTICE 会逐项补充具体文件。
+     - prompt-based ReAct 工具调用循环（计划落地于 backend/agents/react_loop.py）
+     - 多模态置信度自适应加权 + 模态一致性复核（计划落地于 backend/perception/fusion.py）
+     - 成功案例经验复用（计划落地于 backend/memory/experience.py）
+     - LLM 调用日志与并发限流（计划落地于 backend/observability/）
+     - 国产算力探测链 MUSA→CUDA→numpy（计划落地于 backend/perception/gpu.py）
+
+================================================================================
+二、第三方依赖
+================================================================================
+
+  fastapi / uvicorn           MIT
+  requests                    Apache License 2.0
+  python-dotenv               BSD-3-Clause
+  edge-tts                    LGPL-3.0
+  apscheduler                 MIT
+  Three.js (r160)             MIT        （frontend/assets/three.module.js，本地化）
+
+================================================================================
+三、维护约定
+================================================================================
+
+任何从第三方项目复制或改造而来的代码，合入前必须在本文件登记：
+  - 复制源代码的：注明来源项目、许可证、具体文件与改动点
+  - 仅参考设计思想的：注明来源与设计要点，并说明重写方式
+
+未在本文件登记的外部代码不得合入本仓库主分支。

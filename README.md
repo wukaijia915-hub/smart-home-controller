@@ -9,9 +9,11 @@
 |---|---|
 | 数字孪生沙盒 | Three.js 3D 客厅场景：吊灯/台灯（亮度联动）、窗帘（开合动画）、空调（指示灯）、电视（流光屏）、风扇（旋转）、加湿器（水雾粒子）、沙发/茶几/电视柜 |
 | 环境仿真 | 昼夜光照循环、温湿度波动、人体红外、空气质量；与设备状态联动（开灯/开窗帘→光照上升、开空调→温度趋稳） |
-| 多模态 Agent | 双层决策：①规则层（场景+设备指令，<100ms）②远端 LLM 推理层（Function Calling 风格结构化输出，配置 API Key 后启用） |
-| 设备抽象层 | Device/Attribute/Command schema + 10 个虚拟设备驱动（参考 Matter cluster / HA entity 模型） |
-| 能力注册表 | 能力契约与设备类别解耦 + 口语别名归一（「好热」→ climate.set_temperature）+ 孪生配对（可执行数字孪生） |
+| 多模态 Agent | 双层决策：①规则层（场景+设备指令，<100ms）②远端 LLM 推理层（结构化 JSON 输出，配置 API Key 后启用；无 Key 时全链路仍可演示） |
+| 设备抽象层 | Device/Attribute/Command schema + **17 台虚拟设备 / 12 个类别**（参考 Matter cluster / HA entity 模型） |
+| 工具层 | **64 个标准化工具**，schema 由设备属性元数据反推（永不漂移），支持 MCP 动态发现与调用 |
+| 可信执行链 | 授权租约 + 状态版本校验 + 参数校验 + 高危二次确认 + 回读三态证据（confirmed/delivered/failed） |
+| 能力注册表 | 能力契约与设备类别解耦 + 39 条口语别名归一（「好热」→ climate.set_temperature）+ 孪生配对（可执行数字孪生） |
 | 事件路由引擎 | 声明式事件路由（跌倒看护/离家节能/隐患预警）+ 冷却去重 + fan-out 并发 + 回读确认证据链 |
 | 数字人 | 低成本 SVG 形象"小智"+ 说话口型动画 + 状态提示 |
 | 交互 | 自然语言对话（支持一句话多条指令）、6 大场景模式按钮、实时设备状态面板、传感器面板 |
@@ -19,28 +21,54 @@
 ## 二、目录结构
 
 ```
-web3d_demo/
+smart-home-controller/
 ├── backend/
-│   ├── main.py               # FastAPI 入口：REST + WebSocket + 前端静态托管
-│   ├── agent.py              # 决策 Agent（场景规则 + 设备指令规则 + LLM 层）
-│   ├── llm_client.py         # 远端大模型客户端（OpenAI 兼容，未配置自动回退规则引擎）
-│   ├── scenes.py             # 标准场景模式（回家/离家/观影/睡眠/会客/节能等）
-│   ├── sensors.py            # 环境/传感器仿真
-│   └── devices/              # 设备抽象层
-│       ├── schema.py         # Device/Attribute/Command 模型
-│       ├── virtual_devices.py# 虚拟设备驱动
-│       └── registry.py       # 设备注册表 + 命令执行 + 变更事件
-├── frontend/
+│   ├── main.py                  FastAPI 入口：装配单例、挂路由、lifespan 后台循环
+│   ├── agent.py                 HomeAgent 门面：端云路由 → Root → Manager 决策链
+│   ├── agents/                  ★ 多智能体决策层
+│   │   ├── root_agent.py          Root：编排者，只提议 + 授权，不执行
+│   │   └── manager_agent.py       Manager：翻译 + 校验 + 执行（最后一道闸门）
+│   ├── toolkit/                 ★ 工具层：LLM 影响物理世界的唯一出口
+│   │   ├── schema_gen.py          从设备属性元数据反推工具契约（schema 永不漂移）
+│   │   └── registry.py            工具注册表 + 参数校验 + 调用日志（可审计）
+│   ├── tools.py                 兼容垫片 → 转发到 toolkit/
+│   ├── lease.py                 授权租约 + 高危操作策略（lock/gas_stove/camera）
+│   ├── state.py                 单一真相源：版本递增 + 审计日志 + pending 队列
+│   ├── capabilities.py          能力契约 + 口语别名归一 + 孪生配对
+│   ├── event_routes.py          声明式事件路由（冷却去重 + fan-out 并发）
+│   ├── edge_cloud.py            端云隐私分级（L0/L1/L2）+ 脱敏 + 上云审计
+│   ├── multimodal.py            端侧视觉事件检测（画面本地处理，不上云）
+│   ├── mcp.py                   MCP Server（JSON-RPC 2.0）
+│   ├── channels.py              多渠道接入（HTTP / Webhook / MQTT 模拟）
+│   ├── skills.py                用户自定义技能（动作组合）
+│   ├── scheduler.py             APScheduler 定时任务
+│   ├── scenes.py                10 个标准场景
+│   ├── sensors.py               环境/传感器仿真（含昼夜光照循环）
+│   ├── config_loader.py         JSON 配置热重载
+│   ├── llm_client.py            多后端 LLM 客户端（智谱/DeepSeek/通义/Moonshot）
+│   ├── config/                  JSON 配置驱动（不硬编码进 Python）
+│   │   ├── devices.json           17 台设备 / 12 个类别
+│   │   ├── scenes.json            10 个场景
+│   │   ├── environment.json       传感器 / 昼夜循环 / 联动系数 / 告警阈值
+│   │   ├── capabilities.json      16 条能力契约 + 39 条口语别名
+│   │   └── event_routes.json      3 条事件路由
+│   ├── devices/                 设备抽象层
+│   │   ├── schema.py              Device / Attribute / Command 模型
+│   │   ├── virtual_devices.py     虚拟设备驱动 + apply_command 命令语义
+│   │   └── registry.py            设备注册表 + 回读确认 + 孪生同步
+│   └── knowledge/               知识库（设备手册 + 用户习惯统计）
+├── frontend/                    原生 HTML/CSS/ES Module + Three.js r160（无构建工具）
 │   ├── index.html
-│   ├── css/style.css
-│   └── js/
-│       ├── three.min.js      # Three.js（本地化，离线可用）
-│       ├── scene.js          # 3D 客厅沙盒
-│       ├── digital_human.js  # 低成本数字人
-│       └── app.js            # WebSocket 通信 + UI 联动
+│   ├── assets/three.module.js
+│   ├── models/*.glb             10 个 GLB 模型（房屋/家具/绿植）
+│   └── js/{scene,digital_human,app}.js
+├── tests_*.py                   6 个回归测试脚本（见第七节）
+├── demo_*.py                    场景演示脚本
 ├── requirements.txt
-├── .env.example              # LLM API 配置模板
-└── start.bat                 # 一键启动脚本
+├── .env.example                 LLM API 配置模板
+├── CLAUDE.md                    ★ 开发约定（改动前必读）
+├── LICENSE / NOTICE             许可证与第三方来源声明
+└── start.bat                    一键启动脚本
 ```
 
 ## 三、快速启动
@@ -106,30 +134,48 @@ LLM_MODEL=deepseek-chat
 ## 七、验证与测试
 
 ```bash
-# 冒烟测试：设备层 + 规则 Agent 决策
-python tests_smoke.py
-# 端云协同 + 多模态测试（19 项断言）
-python tests_edge_cloud.py
-# 能力注册表 + 事件路由 + 执行契约测试（30 项断言）
-python tests_capabilities.py
-# 可执行数字孪生 + 证据链 5 场景演示
-python demo_capability_route.py
+# 全量门禁（每个阶段收尾必须六脚本全绿）
+python tests_smoke.py         # 设备层 + 规则决策冒烟
+python tests_agents.py        # 租约 / 版本校验 / 幻觉拦截 / 高危二次确认
+python tests_capabilities.py  # 能力注册表 + 事件路由 + 执行契约（30 项断言）
+python tests_edge_cloud.py    # 隐私分级 / 脱敏 / 端云路由（19 项断言）
+python tests_error.py         # 7 类异常与边界输入（26 项断言）
+python tests_performance.py --api   # 5 项量化验收指标
+
+# 演示脚本
+python demo_capability_route.py     # 可执行数字孪生 + 证据链 5 场景
+python demo_edge_cloud.py           # 端云协同 5 场景
 ```
 
-已通过验证：
-- 10 个虚拟设备增删与控制、命令范围校验
-- 场景/指令规则命中（含一句话多指令）
-- WebSocket 实时链路（init → chat → device_state / agent_reply）
-- 传感器仿真动态更新与设备联动（开窗帘→光照上升）
-- 口语别名归一（好热/太亮/拉上窗帘 → 能力契约）与设备类别契约筛选
-- 执行回读确认三态（confirmed/delivered/failed）+ 孪生配对一致性证据
-- 事件路由 fan-out + 冷却去重（跌倒看护/离家节能）
-- 浏览器端 3D 渲染、对话交互、场景按钮（Chrome 实测）
+**离线模式**：加 `LLM_OFFLINE=1` 可强制不发起任何网络请求，全部走规则与结构化路径。
+用于「断网演练」演示，也用于让回归测试可复现（不依赖网络与模型输出波动）：
 
-## 八、后续路线（对应方案 V2.0 第三阶段起）
+```bash
+LLM_OFFLINE=1 python tests_performance.py
+```
 
-- 数字人升级：Live2D / ReadyPlayerMe + uLipSync（3D 化）
-- 语音链路：浏览器 Web Speech API / FunASR + Edge-TTS / CosyVoice
-- 场景扩展：卧室 3D 化、更多设备类型
-- 真实设备：Matter / Home Assistant 协议对接（虚拟设备驱动替换）
-- 开放接入 SDK 完善 + 设备注册/发现
+### 当前实测指标
+
+| 指标 | 目标 | 实测 | 结论 |
+|---|---|---|---|
+| 规则层响应延迟 | < 100ms | 平均 7.4ms / p95 18ms | ✅ |
+| 设备控制成功率 | ≥ 95% | 64/64 = 100% | ✅ |
+| 决策准确率（标准场景集 S1–S11） | ≥ 90% | **离线 93.3% / 在线 100%** | ✅ |
+| 前端渲染帧率 | ≥ 30 FPS | 待浏览器实测 | — |
+
+> **关于决策准确率的说明**：离线 93.3% 是规则层的真实覆盖度；未覆盖的 2 个口语变体
+> （「我走了」「看个片」）在联网时由 LLM 兜底，故在线为 100%。这一分层数据比笼统
+> 宣称 100% 更有意义——它恰好标出了规则层与 LLM 层各自的能力边界。
+
+## 八、后续路线
+
+详见 `docs/融合技术白皮书.md`。近期方向：
+
+- **感知层**：多模态置信度融合（视觉行为 + 面部表情 + 环境行为 + 前庭振动），
+  模态一致性复核；全部端侧推理，仅标签出网
+- **记忆层**：习惯统计 + 设备手册 + 成功案例经验复用三源
+- **快慢双环**：秒级控制环（已有）+ 22:00 家庭日报生成环（LLM 优先 / 模板降级）
+- **决策层**：五级意图漏斗 + prompt-based ReAct 慢环（适配不支持 function calling 的国产模型）
+- **数字人升级**：Live2D / ReadyPlayerMe + uLipSync（3D 化）
+- **真实设备**：Matter / Home Assistant 协议对接（替换虚拟设备驱动，能力契约不变）
+- **国产算力**：感知层计算密集路径接入 MUSA→CUDA→numpy 自动探测链

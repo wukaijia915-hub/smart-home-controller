@@ -97,9 +97,12 @@ class ManagerAgent:
         for m in (history or [])[-6:]:
             messages.insert(-1, m)
         result = self.llm.chat_json(messages, max_tokens=300, context_text=goal)
-        if not result:
+        if not isinstance(result, dict):
             return []
-        return [a for a in result.get("actions", [])
+        actions = result.get("actions", [])
+        if not isinstance(actions, list):
+            return []
+        return [a for a in actions
                 if isinstance(a, dict) and a.get("device_id") and a.get("command")]
 
     def _build_system_prompt(self) -> str:

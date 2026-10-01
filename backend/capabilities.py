@@ -158,6 +158,29 @@ class CapabilityRegistry:
     def get_twin(self, virtual_device_id: str) -> Optional[PhysicalTwinPlaceholder]:
         return self.twin_pairs.get(virtual_device_id)
 
+    def auto_pair(self, devices, skip_protocols: tuple = ("virtual",)) -> int:
+        """为设备清单中所有实体协议设备自动建立孪生对，返回本次新建数量。
+
+        physical_id 由 `<protocol>_<device_id>` 推导（如 matter_ac_bedroom_01），
+        同时回写 `device.twin_of`。
+
+        修复的背景：Device.twin_of 字段在 schema 中存在，但 `_device_from_config`
+        从不读取它，生产代码也从不调用 pair_twin —— 导致 twin_pairs 恒为空、
+        registry.control() 的 result["twin"] 永远不出现，即 README 宣称的
+        「可执行数字孪生」在运行的系统里实际是死的。
+        """
+        created = 0
+        for device in devices:
+            if device.protocol in skip_protocols:
+                continue
+            physical_id = device.twin_of or f"{device.protocol}_{device.device_id}"
+            device.twin_of = physical_id
+            if device.device_id not in self.twin_pairs:
+                self.pair_twin(device.device_id, physical_id,
+                               name=device.name, protocol=device.protocol)
+                created += 1
+        return created
+
     # ---------- 展示 ----------
     def list_capabilities(self) -> dict:
         return {
