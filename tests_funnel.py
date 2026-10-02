@@ -204,6 +204,92 @@ for text in ["我回家了", "看电影", "阅读模式", "太亮", "打开客�
 agent.llm.chat_json = original
 check("规则命中的输入不触发 LLM 调用", llm_calls["n"] == 0, f"实际调用 {llm_calls['n']} 次")
 
+# ---------------------------------------------------------------- 6. 架构不变量
+print("\n== 6. 架构不变量：LLM 只提议，护栏负责拒绝 ==")
+
+# Manager 是纯护栏，不应持有 LLM
+check("Manager 不持有 LLM", not hasattr(agent.manager, "llm"),
+      f"发现属性 {[a for a in dir(agent.manager) if 'llm' in a.lower()]}")
+
+# 慢环：Root 单次提议 → Manager 零调用。用假 LLM 使测试离线可复现
+_original_chat = agent.llm.chat_json
+_original_available = agent.llm.available
+_fake = {"calls": 0}
+
+def _fake_chat_json(messages, **kwargs):
+    _fake["calls"] += 1
+    return {
+        "is_command": True,
+        "reply": "好的，已为您把灯光调柔和。",
+        "actions": [{"device_id": "light_living_01", "command": "set_brightness",
+                     "params": {"brightness": 30}}],
+    }
+
+agent.llm.chat_json = _fake_chat_json
+agent.llm.available = True
+try:
+    res = agent.decide("把灯光调得柔和一些")
+finally:
+    agent.llm.chat_json = _original_chat
+    agent.llm.available = _original_available
+
+check("慢环全程只调用一次 LLM", _fake["calls"] == 1, f"实际 {_fake['calls']} 次")
+check("模型提议的动作被 Manager 执行",
+      any(a.get("device_id") == "light_living_01" and a.get("command") == "set_brightness"
+          for a in res.get("actions", [])),
+      str(res.get("actions")))
+
+# 注意：测试输入的选取很关键 —— 必须能被漏斗①~⑤ 放行才走得到慢环。
+# 例如「打开客厅的灯」会被设备正则命中，根本到不了 LLM，用它测"模型提议被拒绝"
+# 会得到假通过（实际是规则层干的）。下面两个输入均已确认会走慢环，
+# 并由 `_fake["calls"] == 1` 显式断言这一点。
+SLOW_PATH_INPUT_BAD_DEVICE = "把整个屋子的氛围弄温馨一点"
+SLOW_PATH_INPUT_HIGH_RISK = "把家里的门锁处理一下"
+
+# 模型提议了不存在的设备 → Manager 必须拒绝而非执行
+_fake2 = {"calls": 0}
+def _fake_bad_action(messages, **kwargs):
+    _fake2["calls"] += 1
+    return {"is_command": True, "reply": "好的",
+            "actions": [{"device_id": "light_atlantis_99", "command": "turn_on", "params": {}}]}
+
+agent.llm.chat_json = _fake_bad_action
+agent.llm.available = True
+try:
+    res2 = agent.decide(SLOW_PATH_INPUT_BAD_DEVICE)
+finally:
+    agent.llm.chat_json = _original_chat
+    agent.llm.available = _original_available
+
+check("（前提）该输入确实走了慢环", _fake2["calls"] == 1, f"实际 {_fake2['calls']} 次 LLM 调用")
+check("模型提议不存在的设备 → 被拒绝而非执行",
+      not res2.get("actions")
+      and any(not r.get("ok") for r in res2.get("results", [])),
+      f"actions={res2.get('actions')} results={res2.get('results')}")
+check("拒绝原因被记入决策链路",
+      any(not t.get("ok") for t in res2.get("decision_trace", [])),
+      str([(t.get("step"), t.get("ok")) for t in res2.get("decision_trace", [])]))
+
+# 模型提议高危动作 → 仍须挂起二次确认（护栏不因来源是模型而放行）
+_fake3 = {"calls": 0}
+def _fake_high_risk(messages, **kwargs):
+    _fake3["calls"] += 1
+    return {"is_command": True, "reply": "好的",
+            "actions": [{"device_id": "lock_entry_01", "command": "unlock", "params": {}}]}
+
+agent.llm.chat_json = _fake_high_risk
+agent.llm.available = True
+try:
+    res3 = agent.decide(SLOW_PATH_INPUT_HIGH_RISK)
+finally:
+    agent.llm.chat_json = _original_chat
+    agent.llm.available = _original_available
+
+check("（前提）该输入确实走了慢环", _fake3["calls"] == 1, f"实际 {_fake3['calls']} 次 LLM 调用")
+check("模型提议高危动作 → 挂起待确认",
+      res3.get("requires_confirmation") is True and bool(res3.get("pending_id")),
+      f"requires_confirmation={res3.get('requires_confirmation')}")
+
 # ---------------------------------------------------------------- 汇总
 print()
 print("=" * 60)

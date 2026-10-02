@@ -62,7 +62,8 @@ smart-home-controller/
 │   ├── assets/three.module.js
 │   ├── models/*.glb             10 个 GLB 模型（房屋/家具/绿植）
 │   └── js/{scene,digital_human,app}.js
-├── tests_*.py                   6 个回归测试脚本（见第七节）
+├── experiments/                 ★ 方案选型的实测依据（ReAct 遵循度 / 幻觉率 / 延迟归因）
+├── tests_*.py                   7 个回归测试脚本（见第七节）
 ├── demo_*.py                    场景演示脚本
 ├── requirements.txt
 ├── .env.example                 LLM API 配置模板
@@ -140,7 +141,7 @@ LLM_OFFLINE=1 python tests_agents.py        # 租约 / 版本校验 / 幻觉拦�
 LLM_OFFLINE=1 python tests_capabilities.py  # 能力注册表 + 事件路由 + 执行契约（30 项）
 LLM_OFFLINE=1 python tests_edge_cloud.py    # 隐私分级 / 脱敏 / 端云路由（19 项）
 LLM_OFFLINE=1 python tests_error.py         # 7 类异常与边界输入（26 项）
-LLM_OFFLINE=1 python tests_funnel.py        # 五级意图漏斗优先级 + 护栏不被绕过（30 项）
+LLM_OFFLINE=1 python tests_funnel.py        # 五级漏斗优先级 + 架构不变量 + 护栏不被绕过（38 项）
 LLM_OFFLINE=1 python tests_performance.py   # 量化验收指标
 
 # 演示脚本

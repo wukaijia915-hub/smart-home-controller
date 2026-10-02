@@ -403,14 +403,14 @@ class RootAgent:
             f"当前环境传感器：{sensor_text}\n"
             f"{rag_section}\n\n"
             f"用户指令：{text}\n\n"
-            f"请判断该指令是否为设备控制/场景联动意图，并拆解为高层子任务。"
+            f"请判断该指令是否为设备控制/场景联动意图，并给出具体的设备动作。"
         )
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         for m in (history or [])[-6:]:
             messages.insert(-1, m)
 
-        result = self.llm.chat_json(messages, max_tokens=500, context_text=text)
-        # LLM 返回的 JSON 属不可信输入：必须是对象，字段类型也要逐一防御
+        result = self.llm.chat_json(messages, max_tokens=700, context_text=text)
+        # LLM 返回的 JSON 属不可信输入：必须是对象，字段类型逐一防御
         if not isinstance(result, dict):
             return None
 
@@ -420,33 +420,78 @@ class RootAgent:
             return TaskPlan(is_command=False, source="llm", reply=reply,
                             sub_tasks=[], state_version=self.store.version)
 
-        raw_tasks = result.get("sub_tasks", [])
-        if not isinstance(raw_tasks, list):
-            raw_tasks = []
-        sub_tasks = [
-            SubTask(source="llm", goal=t.get("goal", ""), category=t.get("category", ""))
-            for t in raw_tasks
-            if isinstance(t, dict) and t.get("goal")
-        ]
+        raw_actions = result.get("actions")
+        if not isinstance(raw_actions, list):
+            raw_actions = []
+        sub_tasks = []
+        for a in raw_actions:
+            if not isinstance(a, dict):
+                continue
+            device_id = str(a.get("device_id") or "")
+            command = str(a.get("command") or "")
+            if not device_id or not command:
+                continue        # 字段不全 → 不是一条可校验的提议，直接丢弃
+            params = a.get("params")
+            device = self.registry.get(device_id)
+            sub_tasks.append(SubTask(
+                source="llm", device_id=device_id, command=command,
+                params=params if isinstance(params, dict) else {},
+                category=device.category if device else "",
+            ))
+            # 注意：此处**不**过滤 device_id 不存在的动作。Root 只提议、不执行，
+            # 合法性由 Manager._verify 判定（实测幻觉率 0%，且 verify 有测试覆盖）。
+            # 若在这里自审，Manager 那道闸门就失去了意义。
+
         if not sub_tasks:
             return TaskPlan(is_command=False, source="llm", reply=reply,
                             sub_tasks=[], state_version=self.store.version)
         return TaskPlan(is_command=True, source="llm", reply=reply,
                         sub_tasks=sub_tasks, state_version=self.store.version)
 
-    def _build_system_prompt(self) -> str:
-        device_desc = []
+    # ---------- 慢环：意图理解 + 具体动作提议 ----------
+    def _describe_devices(self) -> str:
+        """生成给模型看的设备清单（含可用命令与参数范围）。
+
+        命令与参数范围直接取自 `toolkit.schema_gen.PARAM_SOURCE` —— prompt 与工具层
+        共用同一份定义，避免出现"prompt 教模型调一个命令、工具层却不认"的漂移。
+        """
+        from ..toolkit.schema_gen import PARAM_SOURCE
+
+        lines = []
         for d in self.registry.all():
-            attrs = {k: a.value for k, a in d.attributes.items()}
-            device_desc.append(f"{d.device_id}({d.name},{d.room},{d.category},{json.dumps(attrs, ensure_ascii=False)})")
+            cmds = []
+            for c in d.commands:
+                parts = []
+                for pname, aname in PARAM_SOURCE.get(c, []):
+                    a = d.attributes.get(aname)
+                    if a is None:
+                        continue
+                    if a.type == "enum" and a.options:
+                        parts.append(f"{pname}:{'|'.join(str(o) for o in a.options)}")
+                    elif a.type == "number":
+                        parts.append(f"{pname}:{a.min}-{a.max}")
+                cmds.append(f"{c}({','.join(parts)})" if parts else c)
+            state = {k: v.value for k, v in d.attributes.items()}
+            lines.append(
+                f"- {d.device_id} | {d.name} | {d.room} | {d.category} "
+                f"| 当前={json.dumps(state, ensure_ascii=False)} "
+                f"| 命令：{' '.join(cmds)}")
+        return "\n".join(lines)
+
+    def _build_system_prompt(self) -> str:
         return (
-            "你是智能家居中控的编排者 Root，负责意图理解和任务拆解，**只提议、不执行**。\n"
+            "你是智能家居中控的编排者 Root，负责意图理解与动作提议，**只提议、不执行**。\n"
             "输出 JSON，格式如下：\n"
-            '{"is_command": true, "reply": "简短中文回复", "sub_tasks": [{"goal": "把客厅灯调暗到20%", "category": "light"}]}\n'
+            '{"is_command": true, "reply": "简短中文回复", '
+            '"actions": [{"device_id": "light_living_01", "command": "set_brightness", "params": {"brightness": 20}}]}\n'
             "规则：\n"
-            "1. is_command 表示用户输入是否为设备控制/场景联动意图。寒暄、闲聊、提问、问候（如\"你好\"\"你是谁\"\"谢谢\"）必须 is_command=false 且 sub_tasks 为空数组 []。\n"
-            "2. sub_tasks 每个元素是一个高层操作目标（goal），不要写具体 device_id 或 command，由 Manager 负责翻译。\n"
-            "3. 结合环境传感器和用户习惯，可主动给出联动建议（如温度高时建议开空调），但 goal 必须与用户指令相关。\n"
-            f"可用设备(id,名称,房间,类别,当前属性):\n" + "\n".join(device_desc) + "\n"
-            "只输出 JSON，不要输出其他文字。"
+            "1. is_command 表示用户输入是否为设备控制/场景联动意图。寒暄、闲聊、提问、问候"
+            "（如「你好」「你是谁」「谢谢」）必须 is_command=false 且 actions 为空数组 []。\n"
+            "2. device_id 与 command 必须严格取自下面的设备清单，**不得编造**。\n"
+            "3. 参数值必须落在清单标注的范围内。一个目标可能对应多条动作"
+            "（如「开空调到 24 度」= turn_on + set_temperature）。\n"
+            "4. 单次回复最多 4 条动作：若目标需要更多，只做最关键的几条，并在 reply 里说明还差什么。\n"
+            "5. 结合传感器与用户习惯可主动给出联动建议，但动作必须与用户指令相关。\n\n"
+            "可用设备（id | 名称 | 房间 | 类别 | 当前状态 | 可用命令）：\n"
+            + self._describe_devices() + "\n\n只输出 JSON，不要输出其他文字。"
         )

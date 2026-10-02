@@ -1,14 +1,19 @@
 # -*- coding: utf-8 -*-
-"""Manager Agent（域管理 + 执行护栏）。
+"""Manager Agent（执行护栏）。
 
-职责：把 Root 下发的子任务翻译成具体设备动作（LLM 路径二次推理），
-逐动作校验（设备存在 / 命令合法 / 参数范围），高危操作挂起待确认，
-通过校验后执行设备并写入单一真相源（StateStore）。
-是「只提议、不执行」的 Root 与设备之间的最后一道校验闸门。
+**本类不调用大模型。** 职责是把 Root 已给出的具体动作逐条校验
+（设备存在 / 命令合法）、按风险等级决定是否高危挂起、通过后执行并写入单一真相源。
+
+为什么不做 LLM 翻译：原实现让 Manager 把 Root 的高层目标再翻译一次，每个子任务
+各调一次模型，一次 decide() 的 LLM 调用数达 1+N。实测（experiments/README.md）
+表明让 Root 直接输出具体动作的**幻觉率为 0%**，且即使出错也会被本类的 `_verify`
+拒绝而非执行 —— 二次翻译既非必要，又引入了一条会畸形的 LLM 路径。
+
+这正是「LLM 的错误由架构兜住，而不是靠 prompt 祈祷」的落点：
+Root 只提议，Manager 决定提议能不能落地。
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -29,22 +34,18 @@ class ExecutionReport:
 
 
 class ManagerAgent:
-    def __init__(self, registry: DeviceRegistry, store: StateStore, llm, capabilities=None):
+    def __init__(self, registry: DeviceRegistry, store: StateStore, capabilities=None):
         self.registry = registry
         self.store = store
-        self.llm = llm
         self.capabilities = capabilities
 
     def run(self, task_plan, history: Optional[list] = None) -> ExecutionReport:
+        """history 参数保留仅为签名兼容，本类不使用（不调 LLM、无会话依赖）。"""
         trace = [TraceStep("ground", f"状态版本 v{task_plan.state_version}，{len(task_plan.sub_tasks)} 个子任务")]
         executed, results = [], []
 
-        # 注意：曾尝试把 N 个子任务的翻译合并为一次批量 LLM 调用（1+N → 1+1），
-        # 但实测 glm-4-flash **无法可靠产出「多项、每项含嵌套数组」的响应**
-        # （8 次探测全部畸形：3 项以上返回单元素数组，2 项也混入多余顶层键）。
-        # 批量失败后回退到逐个翻译，调用数反而更多、延迟更差，故已回退。
-        # 结论见 CLAUDE.md「关于慢环延迟」。
-        plans = self._translate_all(task_plan.sub_tasks, history, trace)
+        # 零 LLM：Root 已给出具体动作，这里只做形状规整
+        plans = self._plan_actions(task_plan.sub_tasks, trace)
 
         for sub_task, actions in plans:
             for action in actions:
@@ -88,35 +89,33 @@ class ManagerAgent:
         return ExecutionReport(reply=task_plan.reply, actions=executed, results=results,
                                trace=trace, requires_confirmation=False)
 
-    # ---------- 翻译 ----------
-    def _translate_all(self, sub_tasks, history, trace) -> list[tuple]:
-        """批量翻译所有子任务，返回 [(sub_task, actions), ...]。
+    # ---------- 计划规整（零 LLM） ----------
+    def _plan_actions(self, sub_tasks, trace) -> list[tuple]:
+        """把 TaskPlan 的子任务规整为 [(sub_task, actions), ...]，全程不调 LLM。
 
-        三级：规则/技能已带具体动作 → 能力契约确定性查表 → 剩余目标合并为一次 LLM 调用。
-        只有真正落到第三级的才产生网络开销。
+        主路径：子任务已带具体动作（来自规则/技能/能力契约，或 Root 的模型提议），直接采纳。
+        兜底：仅有高层 `goal` 的子任务，尝试能力契约确定性查表（仍是 0ms）。
+        查表也不中的，产出一条 ok=False 的 trace 说明，交由上层兜底回复，
+        而不是再去调一次模型 —— 那样会重新引入一条会畸形的 LLM 路径。
         """
-        resolved: list[Optional[list]] = [None] * len(sub_tasks)
-        pending: list[int] = []
-
-        for i, sub_task in enumerate(sub_tasks):
-            if sub_task.source == "rule":
-                trace.append(TraceStep("propose", f"规则命中：{sub_task.device_id}.{sub_task.command}"))
-                resolved[i] = [{"device_id": sub_task.device_id, "command": sub_task.command,
-                                "params": sub_task.params}]
+        plans = []
+        for sub_task in sub_tasks:
+            if sub_task.device_id and sub_task.command:
+                origin = "规则命中" if sub_task.source == "rule" else "模型提议"
+                trace.append(TraceStep(
+                    "propose", f"{origin}：{sub_task.device_id}.{sub_task.command}"))
+                plans.append((sub_task, [{
+                    "device_id": sub_task.device_id,
+                    "command": sub_task.command,
+                    "params": sub_task.params,
+                }]))
                 continue
+
             local = self._resolve_by_capability(sub_task.goal, trace)
-            if local is not None:
-                resolved[i] = local
-                continue
-            pending.append(i)
-
-        if pending:
-            goals = [sub_tasks[i].goal for i in pending]
-            trace.append(TraceStep("propose", f"LLM 翻译 {len(goals)} 个目标"))
-            for idx, goal in zip(pending, goals):
-                resolved[idx] = self._llm_translate(goal, history) or []
-
-        return [(sub_task, resolved[i] or []) for i, sub_task in enumerate(sub_tasks)]
+            if local is None:
+                trace.append(TraceStep("propose", f"无法解析目标：{sub_task.goal}", ok=False))
+            plans.append((sub_task, local or []))
+        return plans
 
     def _resolve_by_capability(self, goal: str, trace) -> Optional[list[dict]]:
         """能力契约确定性查表（0ms）。命中返回动作列表，未命中返回 None。"""
@@ -132,63 +131,6 @@ class ManagerAgent:
         trace.append(TraceStep("propose", f"能力映射：{cap['capability']} → {target.name}"))
         return [{"device_id": target.device_id, "command": cap["command"],
                  "params": dict(cap["params"])}]
-
-    def _translate(self, sub_task, history, trace) -> list[dict]:
-        if sub_task.source == "rule":
-            trace.append(TraceStep("propose", f"规则命中：{sub_task.device_id}.{sub_task.command}"))
-            return [{"device_id": sub_task.device_id, "command": sub_task.command, "params": sub_task.params}]
-
-        # ★ 能力契约确定性查表优先（0ms）：capabilities.json 已建立
-        #   「能力 → 命令 + 参数默认值」映射，能查到的目标不需要再花一次 LLM 调用。
-        #   这是把慢环 LLM 调用次数从 N+1 降到 1 的关键一步。
-        if self.capabilities is not None:
-            cap = self.capabilities.resolve(sub_task.goal)
-            if cap and cap.get("command"):
-                devices = self.capabilities.find_devices(cap["capability"], self.registry)
-                if devices:
-                    target = devices[0]
-                    trace.append(TraceStep(
-                        "propose", f"能力映射：{cap['capability']} → {target.name}"))
-                    return [{"device_id": target.device_id, "command": cap["command"],
-                             "params": dict(cap["params"])}]
-
-        # 兜底：LLM 一次性翻译（第二次 LLM 调用）
-        trace.append(TraceStep("propose", f"LLM 翻译目标：{sub_task.goal}"))
-        return self._llm_translate(sub_task.goal, history)
-
-    def _llm_translate(self, goal: str, history: Optional[list]) -> list[dict]:
-        system = self._build_system_prompt()
-        user = f"操作目标：{goal}\n请翻译为具体设备动作。"
-        messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-        for m in (history or [])[-6:]:
-            messages.insert(-1, m)
-        result = self.llm.chat_json(messages, max_tokens=300, context_text=goal)
-        if not isinstance(result, dict):
-            return []
-        actions = result.get("actions", [])
-        if not isinstance(actions, list):
-            return []
-        return [a for a in actions
-                if isinstance(a, dict) and a.get("device_id") and a.get("command")]
-
-    def _build_system_prompt(self) -> str:
-        device_desc = []
-        for d in self.registry.all():
-            attrs = {k: a.value for k, a in d.attributes.items()}
-            device_desc.append(
-                f"{d.device_id}({d.name},{d.room},{d.category},属性={json.dumps(attrs, ensure_ascii=False)},命令={d.commands})"
-            )
-        return (
-            "你是智能家居中控的执行者 Manager，负责把高层操作目标翻译成具体设备动作。\n"
-            "输出 JSON，格式：\n"
-            '{"actions": [{"device_id": "light_living_01", "command": "set_brightness", "params": {"brightness": 20}}]}\n'
-            "规则：\n"
-            "1. device_id 必须从设备列表中选择，command 必须是该设备声明的命令之一。\n"
-            "2. 一个目标可能需要多个动作（如\"开空调调到24度\"=turn_on+set_temperature），按需拆分。\n"
-            "3. 若目标无法映射到任何设备，返回空 actions: []。\n"
-            f"设备列表(id,名称,房间,类别,属性,命令):\n" + "\n".join(device_desc) + "\n"
-            "只输出 JSON，不要输出其他文字。"
-        )
 
     # ---------- 授权 ----------
     def _issue_lease(self, sub_task, action: dict, task_plan) -> Lease:

@@ -22,12 +22,14 @@ class HomeAgent:
         self.store = StateStore()
         self.router = DecisionRouter()   # 端云协同路由（隐私分级 + 端/云决策）
         self.capabilities = capabilities
-        # 漏斗④（技能）与漏斗⑤（能力契约）需要这两个注册表；
+        # 漏斗③（技能）与漏斗④（能力契约）需要这两个注册表；
         # 不注入时对应漏斗自动跳过，不影响其余决策路径。
         self.root = RootAgent(registry, self.store, self.llm,
                               capabilities=capabilities, skills=skill_manager)
-        self.manager = ManagerAgent(registry, self.store, self.llm,
-                                    capabilities=capabilities)
+        # Manager 是纯护栏，**不持有 LLM**：Root 单次提议具体动作，Manager 只做
+        # 校验/授权/执行/记录。一次 decide() 的 LLM 调用数因此为 0（规则命中）
+        # 或 1（走慢环），不再是原来的 1+N。
+        self.manager = ManagerAgent(registry, self.store, capabilities=capabilities)
         self.session: list[dict] = []   # 短期会话记忆
         self.history: list[dict] = []   # 完整历史（界面展示用）
         self.sensors: dict = {}         # 当前传感器数据（main.py 注入）

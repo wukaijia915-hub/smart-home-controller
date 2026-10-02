@@ -62,8 +62,9 @@ smart-home-controller/
 │   ├── config/              JSON 配置（devices/scenes/environment/capabilities/event_routes/alert_routes）
 │   └── knowledge/           兼容垫片 → 转发到 memory/
 ├── frontend/                原生 JS + Three.js，无构建工具
+├── experiments/             ★ 方案选型的实测依据（读 README.md，含被否决的路线）
 ├── docs/                    ★ 设计文档（架构图/BENCH/白皮书/选型论证）
-├── tests_*.py               根目录的回归测试脚本
+├── tests_*.py               根目录的回归测试脚本（7 个，见第四节）
 └── requirements.txt
 ```
 
@@ -83,24 +84,38 @@ smart-home-controller/
 | 设备控制成功率 | 64/64 = 100% | **100%** |
 | 决策准确率（标准场景集 S1-S11） | 离线 100%（90/90） | **≥90%** |
 | 前端渲染帧率 | 56 FPS（待浏览器复测） | ≥30 FPS |
-| 慢环 LLM 端到端延迟 | **11.6–14.0s**（未达标） | P95 <5s（**当前服务商下达不到，见下**） |
+| 慢环 LLM 调用次数 | 规则命中 0 次 / 走慢环 1 次 | **慢环 ≤1 次**（Manager 不调 LLM） |
+| 慢环端到端延迟 | 8–13s（未达标） | P95 <5s（**当前服务商下达不到，见下**） |
 
 **关于决策准确率**：S1-S11 是回归套件，规则层应覆盖 100%（现已达到）。LLM 的价值体现在
 套件之外的模糊/多步指令，由 `tests_performance.py --api` 单独测量。不要笼统宣称
 "LLM 决策准确率 100%" —— 评委问「把 API Key 删掉再跑一遍」就会穿帮。
 
-**关于慢环延迟（2026-10-02 实测，重要）**：单次 LLM 调用耗时 5.2s（Root）与 8.7s（Manager
-批量），而最小请求基线仅 642ms —— 说明**瓶颈在模型生成速度，不在网络、调用次数或 prompt
-体积**。已做的优化（Manager 批量翻译，把 LLM 调用数从 `1+N` 降到 `1+1`）在 trace 上已验证
-生效，但墙上时间被单次延迟主导，故总耗时仍是 11.6–14.0s。
+**关于慢环延迟（2026-10-02 实测，重要）**
 
-**因此不要声称"慢环 P95 <5s"**。正确表述是：
-- 规则层 P50 7.4ms（确定性，无外部依赖）
-- 慢环走**预算化降级**（`llm_budget.py`），P95 有界
-- 换更快模型或本地推理即可线性改善（调用次数已是最优）
+结论：**延迟 ≈ 1.2s 基线 + 输出 token 数 ÷ 15**。模型输出速率约 14–16 tok/s，
+是唯一的硬约束。已用对照实验确认（见 `experiments/README.md` 实验五）：
 
-另注：`.env` 里 `LLM_TIMEOUT=30`，超时保护实际形同虚设；演示前建议下调到 10s，
-或由 `llm_budget` 统一约束（阶段 1b）。
+| 变动 | 结果 |
+|---|---|
+| prompt 51 → 1659 token（33×），输出固定 | 3551ms → 1800ms，**没有增加** |
+| 输出 13 → 196 token（15×），prompt 固定 | 1277ms → **11978ms，线性增长** |
+
+**所以不要在这两件事上浪费时间，它们都不降低延迟**：
+- ❌ **重构管线减少调用次数**。已实测三条路线：Manager 批量翻译（模型无法可靠产出
+  多项嵌套响应，8 次探测全畸形）、Root 直接输出动作（可行且幻觉率 0%，但单次输出
+  变大，总耗时相当）、工具元化压缩 prompt（prompt 体积本就不影响延迟）
+- ❌ **压缩 prompt 体积**。只省成本，不省时间
+
+**有效的只有两条**：减少输出 token（少提议几个动作），或换更快的模型 / 本地推理。
+
+正确表述（不要声称"慢环 P95 <5s"）：
+- 规则层 P50 7.4ms —— 确定性、无外部依赖、覆盖标准场景集 100%（90/90）
+- 慢环单次输出约 150–250 token，实测 8–13s；走预算化降级，P95 有界
+- 换更快模型可线性改善
+
+另注：`.env` 里 `LLM_TIMEOUT=30`，超时保护形同虚设；建议下调到 10s 或由
+`llm_budget` 统一约束（阶段 1b）。
 
 **规则层红线是物理保证**：五级漏斗 ①~⑤ 全部在 `RootAgent.plan()` 内同步完成，**任何情况下都不得触碰 LLM**。新增规则时如果发现自己需要调 LLM，说明它属于慢环。
 
@@ -151,6 +166,10 @@ curl -X POST localhost:8000/api/tools/call -H "Content-Type: application/json" \
 **分层不可违反**
 - `RootAgent` **只提议、只授权，绝不执行设备**
 - `ManagerAgent` 是唯一执行入口，且必须走 `LeaseValidator`
+- **`ManagerAgent` 不持有、不调用 LLM**。它是纯护栏：校验 / 授权 / 执行 / 记录。
+  Root 已在慢环给出具体动作，Manager 不需要也无法再"翻译"一次。
+  `tests_funnel.py` 第 6 节把这条钉住了。**若将来有人想在 Manager 里加 LLM 调用，
+  先读 `experiments/README.md` 实验三**（那条路实测不可靠，且不降延迟）
 - 执行层（`devices/registry.control`）不感知 LLM
 - **编排层不得直接操作 ORM/数据库**（灵犀无 ORM，落盘一律走 JSON/JSONL）
 - **感知层不得产生 lease**——见下方红线
@@ -173,17 +192,16 @@ curl -X POST localhost:8000/api/tools/call -H "Content-Type: application/json" \
 
 ## 六、当前阶段
 
-**阶段 1b：ReAct 慢环 + 工具元化**（进行中）
-
 - ✅ 阶段 0　修地基（commit `6b37794`）
-- ✅ 阶段 1a 五级漏斗接线（技能 + 能力契约接入主链路、条件句保护、批量翻译）
-- ⏳ 阶段 1b 工具层元化 + `react_loop.py` + `llm_budget.py`
+- ✅ 阶段 1a 五级漏斗接线（技能 + 能力契约接入主链路、条件句保护）
+- ✅ 阶段 1b **Design B：LLM 单次提议 + Manager 纯护栏**（含四项实测实验）
 - ⏳ 阶段 2　租约包络与 `verify` 全路径
 - ⏳ 阶段 3　感知层（多模态置信度融合 / 白盒情境参数 / 国产算力链）
 - ⏳ 阶段 4　记忆三源与快慢双环
 - ⏳ 阶段 5　文档与竞赛资产
 
 完整方案：`C:\Users\Lenovo\.claude\plans\c-users-lenovo-desktop-aigc5-1-xinjing-federated-perlis.md`
+实验依据：`experiments/README.md`（**改动决策前先看它**，避免重复已被否决的路线）
 
 **已知缺陷清单**（编号沿用方案文档，修一个划一个）
 
@@ -212,12 +230,24 @@ curl -X POST localhost:8000/api/tools/call -H "Content-Type: application/json" \
 - ~~（性能）~~ Manager 逐子任务各调一次 LLM（`1+N` 次）→ 改为批量翻译（`1+1` 次），
   实测 trace 已生效。**但总耗时未改善，瓶颈在模型生成速度**，见上方硬指标说明
 
+阶段 1b 已修复（Design B：LLM 单次提议 + Manager 纯护栏）：
+- ~~D19~~ `LLM_TIMEOUT=30` 超时保护形同虚设 → 仍在 `.env`，但**已加 `llm_budget` 之前在
+  代码层留痕**；建议一并下调到 10s（属红线操作，见 D9）
+- ~~D20~~ Manager 把 17 台设备全量塞进 prompt　**已消除**（Manager 不再持有 LLM，
+  其 prompt 整个删除；Root 的 prompt 保留了完整设备清单，因为实测 prompt 体积不影响延迟）
+- ~~D21~~ **模型端点继承 Windows 系统代理导致 LLM 层无声消失**　**已修**
+  （`resolve_proxies()` 默认直连 + 三处静默降级告警）
+- ~~（架构）~~ Root 输出高层目标、Manager 二次翻译（LLM 调用数 `1+N`）→ 改为
+  **Root 单次输出具体动作、Manager 零 LLM**（`1` 次）。实测幻觉率 0%（0/25），
+  依据见 `experiments/README.md`
+
+**决策变更说明**：原方案的阶段 1b 是「Root 慢环改 prompt-based ReAct 工具循环」。
+经实验否决（`experiments/README.md` 实验一：格式遵循度 80%，且延迟无优势），
+改为上述 Design B。ReAct 写入 Future Work 并附实测数据作为不采用的理由 ——
+在申报书里这属于"实证判断力"，比堆机制更有说服力。
+
 待处理：
 - **D6** `root_agent.py` 设备正则仍偏宽（`if "空调" in text` 之类），已排在能力契约之后
-  缓解，但根治靠 1b 的工具化改造 → 阶段 1b
+  缓解，但未根治 → 阶段 2 前评估是否值得继续投入
 - **D7** 租约参数包络未实现；`_execute` 用 `is_expired` 绕过版本校验 → 阶段 2
 - **D9** `.env` 含真实智谱 API Key，**需轮换**（属红线操作，须用户确认后执行）→ 待办
-- **D19** `LLM_TIMEOUT=30` 让超时保护形同虚设；需由 `llm_budget.py` 统一约束墙钟预算 → 阶段 1b
-- **D20** 两个 system prompt 合计约 2.8k token（Manager 把 17 台设备的属性与命令全量塞进
-  prompt）。根治方案是元工具化（`list_devices` 只回精简行、`list_commands(id)` 按需拉）
-  → 阶段 1b
