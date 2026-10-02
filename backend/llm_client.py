@@ -67,6 +67,25 @@ def _parse_json_object(content: str) -> Optional[dict]:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _ms(start: float) -> float:
+    return (time.perf_counter() - start) * 1000.0
+
+
+def _log_call(duration_ms: float, ok: bool, backend: str, model: str,
+              messages: list[dict], output_chars: int, kind: str,
+              degrade_reason: str = "") -> None:
+    """把一次模型调用记入观测层。观测失败绝不影响调用本身。"""
+    try:
+        from .observability.llm_log import llm_log
+        prompt_chars = sum(len(str(m.get("content", ""))) for m in messages or [])
+        llm_log.record_call(duration_ms=duration_ms, ok=ok, backend=backend,
+                            model=model, prompt_chars=prompt_chars,
+                            output_chars=output_chars, kind=kind,
+                            degrade_reason=degrade_reason)
+    except Exception:
+        pass
+
+
 # 预设后端配置（OpenAI 兼容协议）
 PRESET_BACKENDS = {
     "zhipu": {
@@ -122,6 +141,50 @@ class LLMBackend:
             return False
         return True
 
+    def _post(self, messages: list[dict], temperature: float, max_tokens: int,
+              timeout: Optional[float], json_mode: bool, kind: str) -> Optional[str]:
+        """发一次请求，返回原始文本内容；任何异常返回 None。
+
+        日志记录放在这一层而不是各调用方：`chat_json` / `chat_text` 都经过它，
+        因此"模型被调了几次、各花多久、成功与否"不会因为多了个新调用方式就漏计。
+        """
+        if not self.is_ready():
+            _log_call(0.0, False, self.name, self.model, messages, 0, kind,
+                      degrade_reason="后端不可用（无 Key 或熔断中）")
+            return None
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        start = time.perf_counter()
+        try:
+            resp = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}",
+                         "Content-Type": "application/json"},
+                json=payload, timeout=timeout or self.timeout,
+                proxies=resolve_proxies())
+            if resp.status_code != 200:
+                self._record_failure()
+                self._warn_once(f"HTTP {resp.status_code}: {resp.text[:200]}")
+                _log_call(_ms(start), False, self.name, self.model, messages, 0, kind,
+                          degrade_reason=f"HTTP {resp.status_code}")
+                return None
+            content = resp.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            self._record_failure()
+            self._warn_once(f"{type(e).__name__}: {e}")
+            _log_call(_ms(start), False, self.name, self.model, messages, 0, kind,
+                      degrade_reason=f"{type(e).__name__}")
+            return None
+        _log_call(_ms(start), True, self.name, self.model, messages, len(content or ""), kind)
+        self.fail_count = 0  # 成功重置失败计数
+        return content
+
     def chat_json(self, messages: list[dict], temperature: float = 0.2,
                   max_tokens: int = 500, timeout: Optional[float] = None) -> Optional[dict]:
         """返回解析后的 JSON **对象**；任何异常情况一律返回 None。
@@ -133,42 +196,29 @@ class LLMBackend:
 
         timeout 可覆盖 `LLM_TIMEOUT` 环境变量（默认 8s，实测被设为 30s，形同虚设）。
         """
-        if not self.is_ready():
+        content = self._post(messages, temperature, max_tokens, timeout,
+                             json_mode=True, kind="chat_json")
+        if content is None:
             return None
-        url = f"{self.base_url}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "response_format": {"type": "json_object"},
-        }
-        try:
-            resp = requests.post(url, headers=headers, json=payload,
-                                 timeout=timeout or self.timeout, proxies=resolve_proxies())
-            if resp.status_code != 200:
-                self._record_failure()
-                self._warn_once(f"HTTP {resp.status_code}: {resp.text[:200]}")
-                return None
-            data = resp.json()
-            content = data["choices"][0]["message"]["content"]
-        except Exception as e:
-            self._record_failure()
-            self._warn_once(f"{type(e).__name__}: {e}")
-            return None
-
         result = _parse_json_object(content)
         if result is None:
             # 传输正常但模型没按约定返回 JSON 对象：不算后端故障（不累加 fail_count），
             # 返回 None 让上层降级到结构化兜底路径。
             logger.warning(f"[{self.name}] 返回内容不是 JSON 对象，已降级")
             return None
-        self.fail_count = 0  # 成功重置失败计数
         return result
+
+    def chat_text(self, messages: list[dict], temperature: float = 0.4,
+                  max_tokens: int = 800, timeout: Optional[float] = None) -> Optional[str]:
+        """返回模型输出的**纯文本**（不做 JSON 约定）。
+
+        日报生成走这条路：要求模型把中文段落包进 JSON 字符串里，等于让它多做一步
+        容易出错的转义（换行、引号），而这一层的正确性没有护栏兜底 ——
+        日报读起来怪，用户看到的就是"系统坏了"。纯文本路径没有这个风险。
+        """
+        content = self._post(messages, temperature, max_tokens, timeout,
+                             json_mode=False, kind="chat_text")
+        return content.strip() if content else None
 
     def _record_failure(self):
         self.fail_count += 1
@@ -254,6 +304,24 @@ class LLMClient:
             if result is not None:
                 self.last_used_backend = backend.name
                 return result
+        return None
+
+    def chat_text(self, messages: list[dict], temperature: float = 0.4,
+                  max_tokens: int = 800, context_text: str = "",
+                  timeout: Optional[float] = None) -> Optional[str]:
+        """调用 LLM 并返回纯文本。自动故障转移，全部失败返回 None。
+
+        与 chat_json 同一套故障转移与观测：没有理由让"生成日报"这条路径
+        脱离统一的失败可见性。
+        """
+        if not self.available:
+            return None
+        candidates = self._select_backends(context_text)
+        for backend in candidates:
+            content = backend.chat_text(messages, temperature, max_tokens, timeout=timeout)
+            if content:
+                self.last_used_backend = backend.name
+                return content
         return None
 
     def get_status(self) -> dict:
