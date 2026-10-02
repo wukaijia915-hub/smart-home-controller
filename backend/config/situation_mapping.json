@@ -1,0 +1,122 @@
+{
+  "version": "1.0",
+  "_doc": [
+    "白盒情境参数的映射与判定规则（声明式配置，改这里不用改代码）。",
+    "范式参考心镜的 weights.yaml：把「信号 → 中间状态 → 离散类别」做成配置。",
+    "本文件用 JSON 而非 YAML，是为了与项目既有的 5 个 config/*.json 保持一致，",
+    "且不为一个配置文件引入 pyyaml 依赖。",
+    "",
+    "⚠️ 所有 weight / normalize 区间都是**工程选择，不是实测标定值**。",
+    "调参入口就在这里，便于现场演示与后续标定；任何引用本配置数值的文档",
+    "都必须同时说明这一点。"
+  ],
+  "params": {
+    "home_duration": {
+      "label": "在家时长",
+      "unit": "分钟",
+      "weight": 1.0,
+      "normalize": [0, 720],
+      "source": "motion_living / motion_bedroom 的连续在位累计",
+      "truth": "传感器时间戳（可复核）"
+    },
+    "activity": {
+      "label": "活动强度",
+      "unit": "次/小时",
+      "weight": 1.2,
+      "normalize": [0, 60],
+      "source": "设备操作次数与人体触发频次",
+      "truth": "StateStore 审计日志 + 传感器（可复核）"
+    },
+    "routine_deviation": {
+      "label": "作息偏离度",
+      "unit": "σ",
+      "weight": 1.5,
+      "normalize": [0, 3],
+      "source": "当日活动分布相对个人历史基线的偏离",
+      "truth": "历史统计；累积不足时取中性值并标注"
+    },
+    "comfort_offset": {
+      "label": "舒适度偏差",
+      "unit": "归一化 0-1",
+      "weight": 1.0,
+      "normalize": [0, 1],
+      "source": "温湿度/空气质量偏离舒适区的程度",
+      "truth": "传感器读数（可复核）"
+    },
+    "anomaly_count": {
+      "label": "异常行为标志",
+      "unit": "个",
+      "weight": 2.0,
+      "normalize": [0, 3],
+      "source": "深夜活动 / 长时间无活动 / 久卧 的命中个数",
+      "truth": "规则 + 时间窗（规则本身可审计）"
+    }
+  },
+  "comfort_band": {
+    "temp_indoor": [20.0, 26.0],
+    "humidity": [40.0, 60.0],
+    "air_quality": [60.0, 100.0]
+  },
+  "anomaly_rules": {
+    "late_night_activity": {
+      "label": "深夜活动",
+      "active_hours": [23, 0, 1, 2, 3, 4, 5],
+      "min_actions": 3
+    },
+    "prolonged_inactive": {
+      "label": "长时间无活动",
+      "idle_minutes": 180
+    },
+    "prolonged_lying": {
+      "label": "久卧",
+      "lying_minutes": 120
+    }
+  },
+  "regions": [
+    {
+      "id": "away",
+      "label": "家中无人",
+      "level": "info",
+      "when": [{"param": "home_duration", "op": "<=", "value": 5}],
+      "_note": "home_duration 单位分钟，<=5 视为无人"
+    },
+    {
+      "id": "prolonged_inactive",
+      "label": "长时间无活动",
+      "level": "notice",
+      "when": [{"param": "idle_minutes", "op": ">=", "value": 180}],
+      "_note": "用 idle_minutes（距上次活动多久）而非 activity（近期操作条数）。操作少不等于长时间没动，后者才有时间维度含义"
+    },
+    {
+      "id": "anomaly",
+      "label": "检出异常行为",
+      "level": "warning",
+      "when": [{"param": "anomaly_count", "op": ">=", "value": 1}]
+    },
+    {
+      "id": "routine_shifted",
+      "label": "作息紊乱",
+      "level": "notice",
+      "when": [{"param": "routine_deviation", "op": ">=", "value": 2.0}]
+    },
+    {
+      "id": "discomfort",
+      "label": "环境不适",
+      "level": "notice",
+      "when": [{"param": "comfort_offset", "op": ">=", "value": 0.5}]
+    },
+    {
+      "id": "normal",
+      "label": "正常居住",
+      "level": "info",
+      "when": [],
+      "_note": "兜底规则，when 为空视为恒真，必须放在最后"
+    }
+  ],
+  "_region_eval_doc": [
+    "规则按顺序求值，首个命中者胜 —— 所以具体规则必须排在宽泛规则之前。",
+    "判定可引用的量有两类：",
+    "  1) 5 个评分参数：home_duration / activity / routine_deviation / comfort_offset / anomaly_count",
+    "  2) 时序原始量（不参与评分，但语义更直接）：idle_minutes / lying_minutes / presence_minutes"
+  ]
+}

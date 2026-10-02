@@ -42,6 +42,16 @@ class PerceptionContext:
     #: 形状：{"valence": float, "arousal": float, "window_results": [每窗口参数], "K_value": float}
     vestibular: dict = field(default_factory=dict)
 
+    # ---- 以下为白盒情境参数（situation.py）所需的时序输入 ----
+    #: 连续在位累计分钟数（由 PresenceTracker 维护）
+    presence_minutes: float = 0.0
+    #: 距上次活动的分钟数
+    idle_minutes: float = 0.0
+    #: 疑久卧时长（无摄像头证据时为 0，不参与判定）
+    lying_minutes: float = 0.0
+    #: 评估时刻（用于深夜活动判定；默认取当前时间）
+    now: Any = None
+
     def to_dict(self) -> dict:
         """用于审计/落盘的脱敏视图 —— 不包含任何原始画面数据。"""
         return {
@@ -50,6 +60,8 @@ class PerceptionContext:
             "recent_action_count": len(self.recent_actions),
             "has_face_frame": self.face_frame is not None,
             "vestibular_windows": len(self.vestibular.get("window_results", []) or []),
+            "presence_minutes": round(self.presence_minutes, 1),
+            "idle_minutes": round(self.idle_minutes, 1),
         }
 
 

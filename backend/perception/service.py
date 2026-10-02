@@ -23,6 +23,7 @@ from typing import Optional
 from .fusion import MultiModalFuser
 from .modal_gate import MultiModalGate
 from .modalities import ModalityDetector, PerceptionContext, default_modalities
+from .situation import SituationAssessor, SituationInput
 
 #: 这些事件类型已由 event_routes 处理，感知层不再生成建议，避免重复告警
 ROUTED_ELSEWHERE = {"fall_detected", "safety_hazard"}
@@ -32,6 +33,7 @@ ROUTED_ELSEWHERE = {"fall_detected", "safety_hazard"}
 class PerceptionResult:
     readings: list = field(default_factory=list)          # 各模态读数
     gate: dict = field(default_factory=dict)              # 门控结果（含 evidence）
+    situation: dict = field(default_factory=dict)         # 白盒情境参数与归类
     suggestion: Optional[str] = None                      # 询问式建议（或 None）
     suggestion_basis: str = ""                            # 建议依据（可解释性）
     modality_status: list = field(default_factory=list)   # 各模态可用性与元信息
@@ -41,6 +43,7 @@ class PerceptionResult:
         return {
             "readings": [r.to_dict() for r in self.readings],
             "gate": self.gate,
+            "situation": self.situation,
             "suggestion": self.suggestion,
             "suggestion_basis": self.suggestion_basis,
             "modality_status": self.modality_status,
@@ -52,9 +55,11 @@ class PerceptionService:
     """感知层统一入口。"""
 
     def __init__(self, modalities: Optional[list] = None,
-                 gate: Optional[MultiModalGate] = None):
+                 gate: Optional[MultiModalGate] = None,
+                 assessor: Optional[SituationAssessor] = None):
         self.modalities: list = modalities if modalities is not None else default_modalities()
         self.gate = gate or MultiModalGate()
+        self.assessor = assessor or SituationAssessor()
 
     # ---------- 主入口 ----------
     def perceive(self, ctx: PerceptionContext) -> PerceptionResult:
@@ -71,27 +76,64 @@ class PerceptionService:
                 readings.append(reading)
 
         gate_result = self.gate.evaluate(readings)
-        suggestion, basis = self._build_suggestion(readings, gate_result)
+
+        # 情境参数独立于门控计算：它是事实归纳（有真值来源），
+        # 而门控管的是"多模态判定是否互相矛盾"。两者失败模式不同，不该互相牵连。
+        situation = self.assessor.assess(SituationInput(
+            sensors=ctx.sensors or {},
+            recent_actions=ctx.recent_actions or [],
+            presence_minutes=ctx.presence_minutes,
+            idle_minutes=ctx.idle_minutes,
+            lying_minutes=ctx.lying_minutes,
+            history=ctx.habit or {},
+            now=ctx.now,
+        ))
+
+        suggestion, basis = self._build_suggestion(readings, gate_result, situation)
 
         return PerceptionResult(
             readings=readings,
             gate=gate_result.to_dict(),
+            situation=situation.to_dict(),
             suggestion=suggestion,
             suggestion_basis=basis,
             modality_status=status,
-            note=("未通过门控，结果不可采信" if not gate_result.passed else ""),
+            note=("多模态未通过门控，氛围判断不可采信" if not gate_result.passed else ""),
         )
 
     # ---------- 建议生成（只出问句） ----------
     @staticmethod
-    def _build_suggestion(readings: list, gate_result) -> tuple[Optional[str], str]:
-        # 紧急事件交由事件路由处理，感知层不重复
+    def _build_suggestion(readings: list, gate_result,
+                          situation) -> tuple[Optional[str], str]:
+        # 1) 紧急事件交由事件路由处理，感知层不重复
         for r in readings:
             if r.detail.get("event_type") in ROUTED_ELSEWHERE:
                 return None, "该事件由事件路由处理，感知层不重复告警"
 
+        region = situation.region
+        region_label = situation.region_label
+
+        # 2) 家中无人：说了也没人听
+        if region == "away":
+            return None, f"{region_label}，无需播报"
+
+        # 3) 情境异常优先于氛围判断 —— 它有可指认的真值来源，比融合出的氛围更硬
+        if region == "anomaly":
+            return ("注意到今天有些不太寻常的活动，需要我帮您留意一下吗？",
+                    f"情境判定：{region_label}")
+        if region == "prolonged_inactive":
+            return ("有一阵子没检测到活动了，需要我帮您确认一下情况吗？",
+                    f"情境判定：{region_label}")
+        if region == "routine_shifted":
+            return ("最近的作息好像和平时不太一样，要不要把灯光和温度按作息调一下？",
+                    f"情境判定：{region_label}")
+        if region == "discomfort":
+            return ("现在室内环境不太舒服，要不要我帮您调整一下？",
+                    f"情境判定：{region_label}")
+
+        # 4) 氛围判断（依赖多模态融合，需通过一致性门控）
         if not gate_result.passed:
-            return None, f"未通过门控：{gate_result.reason}"
+            return None, f"多模态未通过门控：{gate_result.reason}"
 
         if not readings:
             return None, "无模态读数"
@@ -109,7 +151,7 @@ class PerceptionService:
         if arousal >= 0.6:
             return ("家里挺热闹的，需要把环境调得更舒服些吗？",
                     f"融合判定「{label}」唤醒 {arousal:.2f}")
-        return None, f"状态平稳（{label}），不必打扰"
+        return None, f"状态平稳（{region_label}），不必打扰"
 
     # ---------- 展示 ----------
     def status(self) -> dict:
@@ -117,4 +159,5 @@ class PerceptionService:
             "modalities": [m.status() for m in self.modalities],
             "distance_threshold": self.gate.fuser.distance_threshold,
             "min_fused_confidence": self.gate.min_confidence,
+            "situation_params": list((self.assessor.config.get("params") or {}).keys()),
         }

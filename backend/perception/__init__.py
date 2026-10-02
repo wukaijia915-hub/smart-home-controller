@@ -64,6 +64,13 @@ from .modalities import (  # noqa: E402
     default_modalities,
 )
 from .service import PerceptionResult, PerceptionService  # noqa: E402
+from .situation import (  # noqa: E402
+    PresenceTracker,
+    SituationAssessor,
+    SituationInput,
+    SituationParam,
+    SituationState,
+)
 
 __all__ = [
     "PERCEPTION_CANNOT_ACTUATE",
@@ -89,4 +96,10 @@ __all__ = [
     # 服务
     "PerceptionService",
     "PerceptionResult",
+    # 白盒情境参数
+    "SituationAssessor",
+    "SituationInput",
+    "SituationParam",
+    "SituationState",
+    "PresenceTracker",
 ]

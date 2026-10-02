@@ -234,22 +234,27 @@ comfortable = PerceptionContext(
     sensors={"temp_indoor": 23.0, "humidity": 50.0, "air_quality": 85.0},
     recent_actions=[{"device_id": "light_living_01", "command": "turn_on"}] * 3,
     habit={"routine_deviation": 0.2},
+    presence_minutes=120.0,          # 家中有人，否则会被判为 away
 )
 res = svc.perceive(comfortable)
 check("舒适环境：产出读数", len(res.readings) >= 1, str([r.modality for r in res.readings]))
 check("舒适环境：门控通过", res.gate["passed"] is True, res.gate.get("reason", ""))
+check("舒适环境：判定为正常居住", res.situation["region"] == "normal",
+      res.situation["region"])
 check("舒适环境：状态平稳不打扰", res.suggestion is None, str(res.suggestion))
 check("舒适环境：给出了依据说明", bool(res.suggestion_basis), res.suggestion_basis)
 
-# 不适环境 + 低活动 → 应给出**问句**
+# 不适环境 + 有人在 → 应给出**问句**
 uncomfortable = PerceptionContext(
     sensors={"temp_indoor": 32.0, "humidity": 75.0, "air_quality": 30.0},
     recent_actions=[],
-    habit={"routine_deviation": 2.5},
+    habit={"routine_deviation": 0.5},
+    presence_minutes=120.0,
+    idle_minutes=10.0,
 )
 res2 = svc.perceive(uncomfortable)
 check("不适环境：门控通过", res2.gate["passed"] is True, res2.gate.get("reason", ""))
-check("不适环境：给出建议", res2.suggestion is not None)
+check("不适环境：给出建议", res2.suggestion is not None, res2.suggestion_basis)
 check("建议必须是问句（不能是指令）",
       res2.suggestion is not None and ("？" in res2.suggestion or "吗" in res2.suggestion),
       str(res2.suggestion))
@@ -257,6 +262,8 @@ check("建议不含命令式动词（不得出现设备指令措辞）",
       res2.suggestion is not None
       and not any(w in res2.suggestion for w in ["已为您", "已开启", "已关闭", "立即"]),
       str(res2.suggestion))
+check("不适环境被情境层识别",
+      res2.situation["region"] in ("discomfort", "anomaly"), res2.situation["region"])
 
 # 紧急事件 → 交由事件路由，感知层不重复
 fall = svc.perceive(PerceptionContext(scene_hint="跌倒",
@@ -272,17 +279,40 @@ conflict_svc = PerceptionService(modalities=[
     VisionBehaviorModality(),
     EnvironmentBehaviorModality(),
 ])
+# 注意：情境层与多模态门控相互独立 —— 情境是事实归纳（有真值来源），
+# 门控管的是"多模态氛围判断是否自相矛盾"。所以要让"门控失败导致不出建议"
+# 这条可测，情境必须同时是正常的，否则情境建议会先命中（那是正确行为）。
 conflict_ctx = PerceptionContext(
-    scene_hint="有人",                      # 视觉：温和正性
-    sensors={"temp_indoor": 35.0, "humidity": 80.0, "air_quality": 20.0},
-    recent_actions=[],
-    habit={"routine_deviation": 3.0},        # 环境：明显负性
+    scene_hint="无人",                       # 视觉：无人在位（低唤醒）
+    sensors={"temp_indoor": 23.0, "humidity": 50.0, "air_quality": 85.0},
+    recent_actions=[{"a": 1}] * 8,           # 环境：操作频繁（高唤醒）→ 与视觉矛盾
+    habit={"routine_deviation": 1.0},
+    presence_minutes=120.0,
+    idle_minutes=5.0,
 )
 cres = conflict_svc.perceive(conflict_ctx)
 check("模态冲突时门控不通过", cres.gate["passed"] is False,
       f"距离={cres.gate.get('evidence', {}).get('modal_distance')}")
-check("模态冲突时不给建议", cres.suggestion is None)
+check("（前提）该输入的情境判定不覆盖冲突场景",
+      cres.situation["region"] in ("normal",), cres.situation["region"])
+check("模态冲突时不给氛围建议", cres.suggestion is None, str(cres.suggestion))
 check("冲突说明写进了 note", bool(cres.note), cres.note)
+
+# 反过来：情境异常时**不受**多模态门控失败影响（它有独立的真值来源）
+conflict_discomfort = conflict_svc.perceive(PerceptionContext(
+    scene_hint="有人",
+    sensors={"temp_indoor": 35.0, "humidity": 80.0, "air_quality": 20.0},
+    recent_actions=[{"a": 1}] * 5,
+    habit={"routine_deviation": 1.0},
+    presence_minutes=120.0,
+    idle_minutes=5.0,
+))
+check("情境异常不因多模态冲突而被压掉（独立证据）",
+      conflict_discomfort.situation["region"] == "discomfort"
+      and conflict_discomfort.gate["passed"] is False
+      and conflict_discomfort.suggestion is not None,
+      f"region={conflict_discomfort.situation['region']} "
+      f"gate={conflict_discomfort.gate['passed']}")
 
 # 可选模态不可用 → 优雅降级，不编造
 face = FacialExpressionModality()
@@ -312,6 +342,94 @@ check("面部模态：声明画面零上传", fr.detail.get("frame_bytes_uploade
 st = svc.status()
 check("服务状态含全部模态", len(st["modalities"]) >= 3, str(len(st["modalities"])))
 check("服务状态含门控阈值", "distance_threshold" in st)
+check("服务状态含情境参数清单", len(st["situation_params"]) == 5, str(st["situation_params"]))
+
+# ---------------------------------------------------------------- 9. 白盒情境参数
+print("\n== 9. 白盒情境参数：可解释、可复核 ==")
+
+from datetime import datetime
+
+from backend.perception import PresenceTracker, SituationAssessor, SituationInput
+
+assessor = SituationAssessor()
+
+# 参数齐全 + 每个参数都带真值来源与原始依据
+idle_ctx = SituationInput(
+    sensors={"temp_indoor": 23.0, "humidity": 50.0, "air_quality": 85.0},
+    recent_actions=[{"a": 1}] * 5,
+    presence_minutes=120.0,
+    idle_minutes=10.0,
+    now=datetime(2026, 10, 2, 14, 0),
+)
+state = assessor.assess(idle_ctx)
+check("产出 5 个情境参数", len(state.params) == 5, str(list(state.params.keys())))
+check("每个参数都有真值来源", all(p.truth for p in state.params.values()),
+      str([k for k, p in state.params.items() if not p.truth]))
+check("每个参数都有原始依据", all(p.evidence for p in state.params.values()),
+      str([k for k, p in state.params.items() if not p.evidence]))
+check("每个参数的归一化值落在 [0,1]",
+      all(0.0 <= p.normalized <= 1.0 for p in state.params.values()))
+check("正常环境判定为正常居住", state.region == "normal", state.region)
+
+# 环境不适 → discomfort
+hot = assessor.assess(SituationInput(
+    sensors={"temp_indoor": 34.0, "humidity": 80.0, "air_quality": 25.0},
+    presence_minutes=120.0, now=datetime(2026, 10, 2, 14, 0),
+))
+check("环境不适 → discomfort", hot.region == "discomfort", hot.region)
+check("不适时舒适度偏差为正", hot.params["comfort_offset"].value > 0,
+      str(hot.params["comfort_offset"].value))
+
+# 深夜活动 → anomaly
+night = assessor.assess(SituationInput(
+    sensors={"temp_indoor": 23.0},
+    recent_actions=[{"a": 1}] * 5,
+    presence_minutes=120.0, idle_minutes=1.0,
+    now=datetime(2026, 10, 2, 2, 0),          # 凌晨 2 点
+))
+check("深夜活动 → anomaly", night.region == "anomaly", night.region)
+check("深夜活动被记入异常依据",
+      "late_night_activity" in night.params["anomaly_count"].evidence,
+      str(night.params["anomaly_count"].evidence))
+
+# 久无活动 → prolonged_inactive
+idle = assessor.assess(SituationInput(
+    sensors={"temp_indoor": 23.0},
+    recent_actions=[],
+    presence_minutes=200.0, idle_minutes=200.0,
+    now=datetime(2026, 10, 2, 14, 0),
+))
+check("久无活动 → prolonged_inactive", idle.region == "prolonged_inactive", idle.region)
+
+# 无人 → away
+away = assessor.assess(SituationInput(sensors={"temp_indoor": 23.0}, presence_minutes=0.0,
+                                      now=datetime(2026, 10, 2, 14, 0)))
+check("无人在位 → away", away.region == "away", away.region)
+
+# 无历史数据 → 作息偏离度取中性值**并降低置信度**（不假装知道）
+no_hist = assessor.assess(SituationInput(sensors={"temp_indoor": 23.0}, presence_minutes=120.0,
+                                         now=datetime(2026, 10, 2, 14, 0)))
+rd = no_hist.params["routine_deviation"]
+check("无历史基线时作息偏离度置信度降低", rd.confidence < 1.0, str(rd.confidence))
+check("无历史基线时明确标注", bool(rd.note), rd.note)
+
+# 声明式配置：改配置即可改判定阈值，不用改代码
+check("情境规则来自配置文件", bool(assessor.config.get("regions")),
+      "配置未加载")
+check("兜底规则在最后且条件为空",
+      assessor.config["regions"][-1]["id"] == "normal"
+      and not assessor.config["regions"][-1]["when"])
+
+# PresenceTracker：时长为累积量，首次调用不凭空多出时长
+tracker = PresenceTracker()
+t0 = datetime(2026, 10, 2, 10, 0)
+check("首次调用累计为 0", tracker.update(True, t0) == 0.0, str(tracker.minutes))
+tracker.update(True, datetime(2026, 10, 2, 10, 10))
+check("10 分钟后累计 10 分钟", abs(tracker.minutes - 10.0) < 0.01, str(tracker.minutes))
+tracker.update(False, datetime(2026, 10, 2, 10, 30))
+check("不在位期间不累计", abs(tracker.minutes - 10.0) < 0.01, str(tracker.minutes))
+tracker.reset()
+check("reset 后归零", tracker.minutes == 0.0 and tracker._last_ts is None)
 
 # ---------------------------------------------------------------- 汇总
 print()
