@@ -147,8 +147,9 @@ check("分位数结果必然来自真实样本",
 
 llm = LLMLog(path=Path(_TMP_DIR) / "llm.jsonl")
 for i in range(1, 21):
+    # parse_ms 是漏斗纯解析（亚毫秒量级），total_ms 是 decide 端到端（含执行与审计）
     llm.record_decision(source="rule" if i % 2 else "llm",
-                        rule_ms=float(i), total_ms=float(i) * 100,
+                        parse_ms=float(i) / 100, total_ms=float(i) * 100,
                         degraded=(i % 4 == 0))
 llm.record_call(1200.0, True, "zhipu", "glm-4-flash", prompt_chars=1500,
                 output_chars=300, kind="chat_json")
@@ -163,9 +164,19 @@ check("慢环样本只含慢环决策", m["slow_path"]["samples"] == 10,
 check("★ 规则层与慢环延迟量级分离（这是分层报告的全部意义）",
       m["rule_path"]["avg_ms"] < m["slow_path"]["avg_ms"],
       f"{m['rule_path']['avg_ms']} vs {m['slow_path']['avg_ms']}")
-check("规则层 avg 正确", m["rule_path"]["avg_ms"] == 10.0, str(m["rule_path"]["avg_ms"]))
+check("规则层 avg 为**端到端**口径（含执行与审计）",
+      m["rule_path"]["avg_ms"] == 1000.0, str(m["rule_path"]["avg_ms"]))
+check("★ 规则层同时给出漏斗纯解析口径（两者差两个数量级，同名不同义最难查）",
+      m["rule_path"]["parse"]["avg_ms"] == 0.1
+      and m["rule_path"]["parse"]["avg_ms"] < m["rule_path"]["avg_ms"] / 100,
+      f"parse={m['rule_path']['parse']['avg_ms']} vs total={m['rule_path']['avg_ms']}")
 check("慢环 avg 正确", m["slow_path"]["avg_ms"] == 1100.0, str(m["slow_path"]["avg_ms"]))
-check("p95 已计算", m["rule_path"]["p95_ms"] > 0 and m["slow_path"]["p95_ms"] > 0)
+check("p95 已计算",
+      m["rule_path"]["p95_ms"] > 0 and m["slow_path"]["p95_ms"] > 0
+      and m["rule_path"]["parse"]["p95_ms"] > 0)
+check("note 明确说明 avg/p95 是端到端口径（避免读者再混淆）",
+      "端到端" in m["rule_path"]["note"] and "parse" in m["rule_path"]["note"],
+      m["rule_path"]["note"])
 check("调用次数与成功/失败分开计",
       m["llm_calls"]["calls"] == 2 and m["llm_calls"]["ok"] == 1
       and m["llm_calls"]["failed"] == 1, str(m["llm_calls"]["calls"]))
@@ -179,7 +190,7 @@ check("决策来源分布", m["source_distribution"] == {"rule": 10, "llm": 10},
 # 分层口径：只有 source == "llm" 才算慢环，其余（rule / fallback）都是确定性路径。
 # fallback 指的是"空输入/条件句/规则未命中且未上云"——它们同样在 plan() 内同步返回、
 # 同样没碰模型，所以归入规则层统计是正确口径，不是污染。
-llm.record_decision("fallback", 1.0, 2.0)
+llm.record_decision("fallback", 0.1, 2.0)
 _after = llm.metrics()
 check("非 LLM 来源（含 fallback）都计入规则层，慢环样本不受影响",
       _after["rule_path"]["samples"] == 11 and _after["slow_path"]["samples"] == 10,

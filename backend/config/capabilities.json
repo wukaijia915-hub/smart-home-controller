@@ -159,7 +159,10 @@
       "params": {},
       "aliases": [
         {"keyword": "开门锁"},
-        {"keyword": "解锁"}
+        {"keyword": "解锁"},
+        {"keyword": "把门锁打开"},
+        {"keyword": "打开门锁"},
+        {"keyword": "开一下门锁"}
       ]
     },
     {

@@ -75,20 +75,27 @@ class LLMLog:
                       "degrade_reason": degrade_reason})
 
     # ---------- 每次决策的分层延迟 ----------
-    def record_decision(self, source: str, rule_ms: float, total_ms: float,
+    def record_decision(self, source: str, parse_ms: float, total_ms: float,
                         actions: int = 0, degraded: bool = False,
                         degrade_reason: str = "") -> None:
-        """source: rule / llm / fallback。rule_ms 为漏斗 ①~⑤ 的耗时。
+        """source: rule / llm / fallback。
 
-        只有 `source != "llm"` 的样本进入"规则层"统计 —— 走慢环的请求其
-        `rule_ms` 也包含漏斗未命中的那几毫秒，把它混进规则层会污染指标。
+        **两个延迟量必须都记，且名字不能混**：
+        - `parse_ms` —— 漏斗 ①~⑤ 的**纯解析**耗时（亚毫秒级）
+        - `total_ms` —— `decide()` 的**端到端**耗时（含设备执行、回读、审计写入）
+
+        之前只记了 `parse_ms` 却把它当作"规则层延迟"对外报，而 `docs/BENCH.md`
+        的"规则层延迟"是端到端口径 —— 同一句话在接口与文档里指向两个差两个数量级的
+        数字（0.06ms vs 8.5ms）。这种同名不同义最难查，因为两边单独看都对。
+
+        对外报延迟一律用**端到端**：用户感受到的是它。
         """
         with self._lock:
             if degraded:
                 self._counters["degraded"] += 1
             self._decisions.append({
                 "ts": time.time(), "source": source,
-                "rule_ms": round(rule_ms, 2), "total_ms": round(total_ms, 1),
+                "parse_ms": round(parse_ms, 3), "total_ms": round(total_ms, 2),
                 "actions": actions, "degraded": degraded,
             })
 
@@ -99,24 +106,38 @@ class LLMLog:
             decisions = list(self._decisions)
             counters = dict(self._counters)
 
-        rule_ms = [d["rule_ms"] for d in decisions if d["source"] != "llm"]
-        slow_ms = [d["total_ms"] for d in decisions if d["source"] == "llm"]
+        # 只有 source != "llm" 的样本进入"规则层"统计。fallback（空输入/条件句/
+        # 未命中且未上云）同样在 plan() 内同步返回、同样没碰模型，归入规则层是
+        # 正确口径，不是污染。
+        rule = [d for d in decisions if d["source"] != "llm"]
+        slow = [d for d in decisions if d["source"] == "llm"]
+        rule_total = [d["total_ms"] for d in rule]
+        rule_parse = [d["parse_ms"] for d in rule]
+        slow_total = [d["total_ms"] for d in slow]
         call_ms = [c["duration_ms"] for c in calls]
         slow_calls = [c["duration_ms"] for c in calls if c["ok"] and c["kind"] == "chat_json"]
 
         return {
             "rule_path": {
-                "samples": len(rule_ms),
-                "avg_ms": round(sum(rule_ms) / len(rule_ms), 2) if rule_ms else 0,
-                "p95_ms": percentile(rule_ms, 95),
-                "max_ms": round(max(rule_ms), 2) if rule_ms else 0,
-                "note": "漏斗 ①~⑤ 同步完成，物理上不可能触达 LLM",
+                "samples": len(rule),
+                # avg/p95/max 是**端到端**口径（含执行与审计）——
+                # 这是用户实际感受到、也是 docs/BENCH.md 对外报的数字
+                "avg_ms": round(sum(rule_total) / len(rule_total), 2) if rule_total else 0,
+                "p95_ms": percentile(rule_total, 95),
+                "max_ms": round(max(rule_total), 2) if rule_total else 0,
+                "parse": {
+                    "avg_ms": round(sum(rule_parse) / len(rule_parse), 3) if rule_parse else 0,
+                    "p95_ms": percentile(rule_parse, 95),
+                    "max_ms": round(max(rule_parse), 3) if rule_parse else 0,
+                },
+                "note": "avg/p95 为 decide() 端到端（含执行与审计），parse 为漏斗 "
+                        "①~⑤ 纯解析。两者差两个数量级，报延迟一律用端到端口径",
             },
             "slow_path": {
-                "samples": len(slow_ms),
-                "avg_ms": round(sum(slow_ms) / len(slow_ms), 1) if slow_ms else 0,
-                "p95_ms": percentile(slow_ms, 95),
-                "max_ms": round(max(slow_ms), 1) if slow_ms else 0,
+                "samples": len(slow),
+                "avg_ms": round(sum(slow_total) / len(slow_total), 1) if slow_total else 0,
+                "p95_ms": percentile(slow_total, 95),
+                "max_ms": round(max(slow_total), 1) if slow_total else 0,
                 "note": "延迟 ≈ 1.2s + 输出 token ÷ 15；受模型生成速度主导，"
                         "与调用次数/prompt 体积无关（见 experiments/README.md 实验五）",
             },

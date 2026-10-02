@@ -542,7 +542,15 @@ const DH_STATUS = {
         const rule = d.rule_path || {};
         const slow = d.slow_path || {};
         const calls = d.llm_calls || {};
+        // 显示的是**端到端**（含执行与审计），不是漏斗纯解析 —— 后者是亚毫秒级，
+        // 看起来更漂亮但不能代表用户感受到的延迟。解析口径作为 hover 提示给出。
         setText('ins-rule', `${fmtMs(rule.avg_ms)} / ${fmtMs(rule.p95_ms)}`);
+        const ruleRow = $('ins-rule');
+        if (ruleRow && rule.parse) {
+          ruleRow.title = `端到端（含执行与审计）：avg ${fmtMs(rule.avg_ms)}，p95 ${fmtMs(rule.p95_ms)}`
+            + `\n漏斗纯解析：avg ${fmtMs(rule.parse.avg_ms)}，p95 ${fmtMs(rule.parse.p95_ms)}`
+            + `\n两者相差两个数量级，对外报延迟一律用端到端口径`;
+        }
         setText('ins-slow', slow.samples
           ? `${fmtMs(slow.avg_ms)} / ${fmtMs(slow.p95_ms)}`
           : '暂无慢环样本');

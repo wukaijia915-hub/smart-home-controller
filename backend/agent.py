@@ -53,7 +53,7 @@ class HomeAgent:
         t_plan = time.perf_counter()
         plan = self.root.plan(text, self.sensors, self.session,
                               allow_cloud=route.cloud_allowed, cloud_text=cloud_text)
-        rule_ms = (time.perf_counter() - t_plan) * 1000.0
+        plan_ms = (time.perf_counter() - t_plan) * 1000.0     # 漏斗 ①~⑤ 纯解析
 
         # 显式偏好登记：用户说「我喜欢 26 度」这类话时记下来，用于后续
         # 「声明 vs 实际行为」的一致性校验（见 memory/habits.py）。抽不到就什么都不做。
@@ -67,7 +67,7 @@ class HomeAgent:
         if not plan.is_command or not plan.sub_tasks:
             self._remember(text, plan.reply)
             trace = [{"step": "propose", "detail": "无操作意图，未执行任何设备", "ok": True}]
-            self._record_metrics(plan, trace, rule_ms, t_start)
+            self._record_metrics(plan, trace, plan_ms, t_start)
             return {
                 "reply": plan.reply,
                 "actions": [],
@@ -99,7 +99,7 @@ class HomeAgent:
             trace.insert(0, {"step": "recall",
                              "detail": self._describe_context(plan.context_used), "ok": True})
         self._record_experience(plan, report, text)
-        self._record_metrics(plan, trace, rule_ms, t_start)
+        self._record_metrics(plan, trace, plan_ms, t_start)
         return {
             "reply": report.reply,
             "actions": report.actions,
@@ -168,11 +168,18 @@ class HomeAgent:
         return "召回 " + "；".join(parts) if parts else ""
 
     # ---------- 观测：分层延迟 ----------
-    def _record_metrics(self, plan, trace: list, rule_ms: float, t_start: float) -> None:
+    def _record_metrics(self, plan, trace: list, plan_ms: float, t_start: float) -> None:
+        """同时记两个延迟量：漏斗纯解析（parse_ms）与 decide 端到端（total_ms）。
+
+        对外报"规则层延迟"一律用 total_ms —— 用户感受到的是它，
+        `docs/BENCH.md` 的 8.46ms 也是它。把 parse_ms 当成规则层延迟会得到
+        0.06ms 这种"好看但没意义"的数字（实测踩过：接口报 0.03ms、文档报 8.46ms，
+        同名不同义）。
+        """
         total_ms = (time.perf_counter() - t_start) * 1000.0
         snap = self.root.budget.snapshot()
         llm_log.record_decision(
-            source=plan.source, rule_ms=rule_ms, total_ms=total_ms,
+            source=plan.source, parse_ms=plan_ms, total_ms=total_ms,
             actions=len(plan.sub_tasks or []),
             degraded=bool(snap.get("degraded")), degrade_reason=snap.get("reason", ""))
 
