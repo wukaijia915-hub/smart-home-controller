@@ -13,6 +13,15 @@ let pendingConfirmId = null;
 
 const $ = (id) => document.getElementById(id);
 
+// 数字人状态文案。原实现只有 'happy' / 其它 两种分支，于是环境告警
+// （emotion='alert'）在界面上显示成"小智已收到"，与「检测到异常」的语义不符。
+const DH_STATUS = {
+  happy: '正在为您执行 😊',
+  alert: '检测到异常，正在提醒',
+  neutral: '小智已收到',
+  speak: '小智已收到',
+};
+
   // ---------- 初始化 ----------
   function init() {
     HomeScene.init($('scene3d'));
@@ -26,6 +35,7 @@ const $ = (id) => document.getElementById(id);
     bindTtsToggle();
     initSchedule();
     initPerception();
+    initInsight();
     connect();
 
     setTimeout(() => {
@@ -68,7 +78,7 @@ const $ = (id) => document.getElementById(id);
       case 'agent_reply':
         addMessage('assistant', '小智', msg.reply);
         const dh = msg.digital_human || { emotion: 'happy' };
-        DigitalHuman.setStatus(dh.emotion === 'happy' ? '正在为您执行 😊' : '小智已收到');
+        DigitalHuman.setStatus(DH_STATUS[dh.emotion] || '小智已收到');
         speakText(msg.reply);
         renderTrace(msg.decision_trace);
         if (msg.requires_confirmation && msg.pending_id) {
@@ -90,13 +100,13 @@ const $ = (id) => document.getElementById(id);
           addMessage('assistant', '小智', '⚠️ ' + msg.result.error);
         }
         break;
-      case 'alert':
-        // 主动告警：数字人主动提示
-        addMessage('assistant', '小智', '⚠️ ' + msg.message);
-        DigitalHuman.setStatus('检测到异常，正在提醒');
-        speakText(msg.message);
+      case 'daily_summary':
+        // 外环日报生成完毕（定时 22:00 或手动触发）：直接更新面板，不再播报，
+        // 否则会和同一条内容的其它播报路径重复发声。
+        renderDailySummary(msg.report);
         break;
       case 'perception_suggestion':
+
         // 感知层建议：**只是问句，不代表系统已执行任何设备动作**
         // （后端广播体带 actionable_by_system:false 明确这一点）
         addMessage('assistant', '小智', '💡 ' + msg.suggestion);
@@ -495,6 +505,99 @@ const $ = (id) => document.getElementById(id);
     } else {
       sug.style.display = 'none';
     }
+  }
+
+  // ---------- 记忆与观测面板 ----------
+  // 分层延迟 + 经验库 + 外环日报。
+  // 关键点是**分层**：规则层（纯内存查表，毫秒）与慢环（模型生成，秒）必须分开显示。
+  // 把两者混成一个"平均响应时间"，得到的数字既不解释性能也不解释体验。
+  let insTimer = null;
+
+  function initInsight() {
+    loadInsight();
+    loadDailySummary();
+    insTimer = setInterval(loadInsight, 15000);
+    const btn = $('ins-sum-btn');
+    if (btn) {
+      btn.addEventListener('click', () => {
+        btn.disabled = true;
+        btn.textContent = '生成中…';
+        fetch('/api/jobs/daily_summary/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ window_hours: 24 }),
+        })
+          .then((r) => r.json())
+          .then((d) => { if (d.report) renderDailySummary(d.report); })
+          .catch(() => {})
+          .finally(() => { btn.disabled = false; btn.textContent = '生成'; });
+      });
+    }
+  }
+
+  function loadInsight() {
+    fetch('/api/metrics/llm')
+      .then((r) => r.json())
+      .then((d) => {
+        const rule = d.rule_path || {};
+        const slow = d.slow_path || {};
+        const calls = d.llm_calls || {};
+        setText('ins-rule', `${fmtMs(rule.avg_ms)} / ${fmtMs(rule.p95_ms)}`);
+        setText('ins-slow', slow.samples
+          ? `${fmtMs(slow.avg_ms)} / ${fmtMs(slow.p95_ms)}`
+          : '暂无慢环样本');
+        setText('ins-degrade', calls.calls
+          ? `${Math.round((calls.degrade_rate || 0) * 100)}%　调用 ${calls.calls} 次`
+          : '尚无调用');
+        const tag = $('ins-src-tag');
+        if (tag) {
+          const n = (rule.samples || 0) + (slow.samples || 0);
+          tag.textContent = `样本 ${n}`;
+        }
+      })
+      .catch(() => { /* 观测层不可用不应影响其它面板 */ });
+
+    fetch('/api/memory/stats')
+      .then((r) => r.json())
+      .then((d) => {
+        const e = d.experience || {};
+        setText('ins-exp', `${e.total || 0} 条 / ${e.avg_rating || 0} 分`);
+      })
+      .catch(() => {});
+  }
+
+  function loadDailySummary() {
+    fetch('/api/jobs/daily_summary/latest')
+      .then((r) => r.json())
+      .then((d) => { if (d.report) renderDailySummary(d.report); })
+      .catch(() => {});
+  }
+
+  function renderDailySummary(report) {
+    const body = $('ins-sum-body');
+    if (!body || !report) return;
+    body.textContent = report.narrative || '（空）';
+    const tag = $('ins-sum-src');
+    if (tag) {
+      // 如实标注这一份是模型写的还是模板兜底的 —— 断网演练时用户看到的是模板文案，
+      // 系统不该假装自己用了大模型。
+      const viaLlm = report.source === 'llm';
+      tag.textContent = viaLlm ? 'LLM 生成' : '模板降级';
+      tag.className = 'ins-tag ' + (viaLlm ? 'lv-llm' : 'lv-template');
+      tag.title = viaLlm
+        ? `后端：${(report.llm && report.llm.backend) || '-'}`
+        : `原因：${(report.llm && report.llm.degrade_reason) || '模型不可用'}`;
+    }
+  }
+
+  function setText(id, text) {
+    const el = $(id);
+    if (el) el.textContent = text;
+  }
+
+  function fmtMs(ms) {
+    if (!ms) return '0ms';
+    return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
   }
 
   window.addEventListener('DOMContentLoaded', init);

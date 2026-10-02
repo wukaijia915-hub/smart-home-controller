@@ -412,6 +412,8 @@ html, body {
   border-radius: 4px;
   padding: 2px 0;
 }
+.trace-step .t-badge.recall { background: #a78bfa; }
+.trace-step .t-badge.degrade { background: #ef4444; }
 .trace-step .t-badge.ground { background: #93a3bd; }
 .trace-step .t-badge.propose { background: #4f9dff; }
 .trace-step .t-badge.verify { background: #fbbf24; }
@@ -565,6 +567,75 @@ html, body {
 }
 
 #sit-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  opacity: .7;
+}
+
+/* ---------- 记忆与观测面板 ---------- */
+/* 分层延迟、经验库、日报。这一面板是「数字说话」的落点：
+   慢环延迟必须与规则层分开显示，混成一个"平均响应时间"没有意义。 */
+.ins-tag {
+  float: right;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #22304a;
+  color: var(--text-dim);
+}
+.ins-tag.lv-llm { background: #1f2e28; color: var(--accent-2); }
+.ins-tag.lv-template { background: #3a2a12; color: #fbbf24; }
+
+.ins-grid { display: flex; flex-direction: column; gap: 4px; }
+
+.ins-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  gap: 8px;
+}
+.ins-item .ins-name { color: var(--text-dim); }
+.ins-item .ins-val {
+  color: var(--accent-2);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+#ins-summary {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--panel-border);
+}
+.ins-sum-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+.ins-sum-head button {
+  margin-left: auto;
+  background: var(--accent);
+  color: #0b1220;
+  border: none;
+  border-radius: 5px;
+  padding: 2px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.ins-sum-head button:disabled { opacity: .5; cursor: default; }
+.ins-sum-body {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
+  max-height: 140px;
+  overflow-y: auto;
+}
+#ins-hint {
   margin-top: 8px;
   font-size: 11px;
   color: var(--text-dim);

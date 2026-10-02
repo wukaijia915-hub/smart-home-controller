@@ -47,23 +47,26 @@ smart-home-controller/
 │   │   ├── service.py         感知层入口：模态 → 融合 → 门控 → 询问式建议
 │   │   ├── gpu.py             算力后端探测（如实标注：当前无热路径，不是成果）
 │   │   └── modalities/        各模态检测器（视觉行为/环境行为/面部/前庭）
-│   ├── memory/              ★ 记忆层三源
-│   │   ├── habits.py          用户习惯统计
-│   │   ├── manuals.py         设备手册检索
-│   │   └── experience.py      经验复用（成功案例回灌 prompt）
-│   ├── observability/       ★ 可观测性
-│   │   ├── rate_limit.py      IP 滑窗限流
-│   │   ├── api_log.py         API 统计（加锁）
-│   │   └── llm_log.py         LLM 调用日志（JSONL）
-│   ├── jobs/daily_summary.py ★ 外环：22:00 家庭日报
+│   ├── memory/              ★ 记忆层三源（只读世界，不写世界）
+│   │   ├── habits.py          习惯统计 + 显式偏好一致性校验
+│   │   ├── manuals.py         设备手册检索（含共用打分函数）
+│   │   └── experience.py      经验复用（成功案例回灌 prompt，确定性排序）
+│   ├── observability/       ★ 可观测性（全部加锁）
+│   │   ├── rate_limit.py      IP 滑窗限流（普通 300/min，LLM 10/min）
+│   │   ├── api_log.py         API 统计
+│   │   └── llm_log.py         LLM 调用日志 + 决策分层延迟（/api/metrics/llm 的取数来源）
+│   ├── jobs/daily_summary.py ★ 外环：22:00 家庭日报（LLM 优先 / 模板降级）
+│   ├── alerts.py            ★ 内环告警：读数 → 声明式阈值 → 结构化事件
 │   ├── lease.py             授权租约 + 参数包络
 │   ├── state.py             单一真相源：版本 + 审计日志 + pending 队列
 │   ├── capabilities.py      能力契约 + 别名归一 + 孪生配对
-│   ├── event_routes.py      声明式事件路由
+│   ├── event_routes.py      声明式事件路由（高危动作默认拒绝）
 │   ├── edge_cloud.py        端云隐私分级 L0/L1/L2
 │   ├── devices/             设备抽象 + 虚拟设备工厂
-│   ├── config/              JSON 配置（devices/scenes/environment/capabilities/event_routes/alert_routes）
-│   └── knowledge/           兼容垫片 → 转发到 memory/
+│   ├── config/              JSON 配置（devices/scenes/environment/capabilities/
+│   │                         event_routes/alert_routes/situation_mapping/loops）
+│   └── knowledge/           兼容垫片 → 转发到 memory/（不要再依赖）
+├── data/                    ★ 运行时状态（习惯/经验/日报/定时任务/日志），已 gitignore
 ├── frontend/                原生 JS + Three.js，无构建工具
 ├── experiments/             ★ 方案选型的实测依据（读 README.md，含被否决的路线）
 ├── docs/                    ★ 设计文档（架构图/BENCH/白皮书/选型论证）
@@ -77,6 +80,11 @@ smart-home-controller/
 - 新文档 → `docs/`，命名用中文短语
 - 临时脚本/调试产物 → **不要提交**，用完删
 
+**运行时状态一律进 `data/`**（`data/` 已 gitignore）。代码目录只放代码与静态知识资产
+（`backend/knowledge/device_manuals.json` 是随仓库提交的内容，属于后者）。
+可用 `LINGXI_DATA_DIR` 覆盖数据目录 —— **回归测试必须覆盖它**，理由见 5.4：
+测试曾经直接写真实用户数据，累积出「用户最常用场景 home（使用 1842 次）」这种纯噪声结论。
+
 ---
 
 ## 三、硬指标（改动后必须复测，不可退化）
@@ -89,6 +97,12 @@ smart-home-controller/
 | 前端渲染帧率 | 56 FPS（待浏览器复测） | ≥30 FPS |
 | 慢环 LLM 调用次数 | 规则命中 0 次 / 走慢环 1 次 | **慢环 ≤1 次**（Manager 不调 LLM） |
 | 慢环端到端延迟 | 8–13s（未达标） | P95 <5s（**当前服务商下达不到，见下**） |
+| 慢环降级率 | 见 `/api/metrics/llm` | 无红线，但**必须可见**（降级要打 trace 与计数） |
+
+**分层延迟必须分开报，不要合成一个「平均响应时间」**。规则层是纯内存查表
+（毫秒级），慢环是模型生成（秒级），合成一个数字既不能解释性能也不能解释体验。
+取数一律走 `GET /api/metrics/llm`（`observability/llm_log.py` 记录真实决策样本），
+不要在文档里手填一个好看的数字 —— 评委可以当场调这个接口对。
 
 **关于决策准确率**：S1-S11 是回归套件，规则层应覆盖 100%（现已达到）。LLM 的价值体现在
 套件之外的模糊/多步指令，由 `tests_performance.py --api` 单独测量。不要笼统宣称
@@ -134,7 +148,9 @@ cd smart-home-controller
 # 快速回归（改小东西时）
 LLM_OFFLINE=1 python tests_smoke.py
 
-# 全量门禁（每个阶段收尾必须 8 脚本全绿）
+# 全量门禁（每个阶段收尾必须 12 脚本全绿）
+# 建议加 LINGXI_DATA_DIR 指向临时目录，避免测试写进真实用户数据
+export LINGXI_DATA_DIR=$(mktemp -d)
 LLM_OFFLINE=1 python tests_smoke.py \
   && LLM_OFFLINE=1 python tests_agents.py \
   && LLM_OFFLINE=1 python tests_capabilities.py \
@@ -142,6 +158,10 @@ LLM_OFFLINE=1 python tests_smoke.py \
   && LLM_OFFLINE=1 python tests_error.py \
   && LLM_OFFLINE=1 python tests_funnel.py \
   && LLM_OFFLINE=1 python tests_budget.py \
+  && LLM_OFFLINE=1 python tests_perception.py \
+  && LLM_OFFLINE=1 python tests_memory.py \
+  && LLM_OFFLINE=1 python tests_observability.py \
+  && LLM_OFFLINE=1 python tests_loops.py \
   && LLM_OFFLINE=1 python tests_performance.py
 ```
 
@@ -177,7 +197,9 @@ curl -X POST localhost:8000/api/tools/call -H "Content-Type: application/json" \
   先读 `experiments/README.md` 实验三**（那条路实测不可靠，且不降延迟）
 - 执行层（`devices/registry.control`）不感知 LLM
 - **编排层不得直接操作 ORM/数据库**（灵犀无 ORM，落盘一律走 JSON/JSONL）
-- **感知层不得产生 lease**——见下方红线
+- **感知层不得产生 lease**、**记忆层不得产生设备动作**——见下方红线
+- **外环（日报）失败不得影响内环**。`jobs/daily_summary.run()` 遇任何异常返回
+  `ok=False` 而不抛出去（它跑在后台任务里，抛出去会静默杀掉那个循环）
 
 **红线（代码级不可违背）**
 
@@ -186,12 +208,46 @@ curl -X POST localhost:8000/api/tools/call -H "Content-Type: application/json" \
 3. **原始画面/音频绝不出家庭**。视觉链路一律端侧推理，只把结构化标签上云，复用 `edge_cloud` 的 L0 分级。
 4. **不做情绪测量**。面部表情等信号标注为**演示级**，如实报告验证边界，不做准确率承诺。
 5. **规则层不得引入 LLM**（见第三节）。
+6. **记忆层只能影响 prompt，不能影响世界**。`backend/memory/` 三个源都不得导入
+   `DeviceRegistry` / `lease`，不得出现 `registry.control`。`tests_memory.py` 第 4 节
+   静态扫描（AST + 去注释/去 docstring，避免"谁解释谁违规"）。理由与红线 1 相同：
+   半年后有人加一句"自动应用学到的偏好"谁也不会注意。
+7. **事件路由不得自动执行高危动作**。事件路由是**无人确认**的路径（没有弹窗、
+   没有人点「确认执行」）。`event_routes._refuse_high_risk()` 默认拒绝，
+   需要自动执行的路由必须在配置里显式写 `"allow_high_risk": true` ——
+   让这个决定被写下来、被评审看到，而不是悄悄发生。
+
+**⚠️ 一个必须能当场分辨的区别：内环告警可以自动开空调，感知层不可以**
+
+| | 内环告警（`alerts.py`） | 感知层（`perception/`） |
+|---|---|---|
+| 输入 | 传感器读数（物理量直接比较） | 多模态**统计推断**（置信度融合） |
+| 判定 | `temp_indoor > 30`，确定性 | 融合置信度 + 情境分类 |
+| 阈值所在 | `config/alert_routes.json`，可复核 | 权重/区间在配置，但结论是推断 |
+| 失效模式 | 传感器坏了 → 读数明显离谱 | 不透明（单模态误判、模态冲突） |
+| 能否触发设备动作 | **能**（走 EventRouter，可审计） | **绝不能**（红线 1） |
+
+二者外观相似、性质不同。**答辩必问**："既然环境告警能自动开空调，为什么情绪判断
+不能自动调灯？" 答不上来这一页，红线 1 就会显得像自相矛盾而不是设计约束。
 
 **其他**
 - 测试/估算不出真值时，**如实说明边界**，不要用形容词代替数据（"大幅提升"→ 给数字）
 - 不要为了让代码跑起来注释掉报错或加绕过标记，找根本原因
 - 密钥、token、密码不进代码、不进 commit、不进日志。`.env` 已在 `.gitignore`，**永不提交**
 - 新增第三方依赖前先问：能否用标准库？`requirements.txt` 的"5 行、pip install 即跑"是核心卖点，**重型依赖（如 TensorFlow）必须放 `requirements-vision.txt` 并保证未安装时优雅降级**
+
+### 5.4 写测试时要避开的三个坑（都已实测踩过，各有守门测试）
+
+1. **不要让断言取决于跑测试的钟点**。`late_night_activity` 规则在 23:00–05:00 生效，
+   而服务层测试原本用 `datetime.now()`：同一份代码 22:00 跑是绿的、23:01 跑就红。
+   凡涉及时间/时段的判定，**显式传 `now`**（`PerceptionContext.now`、
+   `SituationInput.now`、`/api/perception/observe` 的 `now_hour`）。
+2. **不要写死配置里的条数**。`tests_capabilities.py` 曾断言"被忽略的路由数 == 3"，
+   阶段 4 往配置里加了 7 条环境联动后它就假失败。断言性质（"没有任何路由命中"），
+   不要断言配置的当前规模。
+3. **不要让测试写真实用户数据**。测试必须设 `LINGXI_DATA_DIR` 到临时目录。
+   曾经的后果：`user_habits.json` 累积几千次测试调用，界面上显示
+   「用户最常用场景 home（使用 1842 次）」—— 那是纯测试噪声，不是用户行为。
 
 ---
 
@@ -204,9 +260,25 @@ curl -X POST localhost:8000/api/tools/call -H "Content-Type: application/json" \
 - ✅ 阶段 3　**感知层**：Gate 抽象 / 多模态置信度融合 / 统一门控 / 四个模态 /
   白盒情境参数 / 算力后端探测 / 感知端点 / 前端情境看板
   （算力后端当前**无热路径**，不得作为成果主张 —— `gpu.status()` 会明确警告）
-- ⏳ 阶段 2　租约包络与 `verify` 全路径（与阶段 3 改动文件不重叠，可穿插做）
-- ⏳ 阶段 4　记忆三源与快慢双环
+- ✅ 阶段 4　**记忆与快慢双环**：记忆三源（手册/习惯/经验）/ 可观测性三件套 /
+  外环 22:00 日报（LLM 优先模板降级）/ 声明式内环告警 / 环境联动 / 前端「记忆与观测」面板
+- ⏳ 阶段 2　租约包络与 `verify` 全路径（与阶段 3/4 改动文件不重叠，可穿插做）
 - ⏳ 阶段 5　文档与竞赛资产
+
+**阶段 4 三条必须记住的边界**（写进申报书前先读这里）
+
+1. **叫「基于成功案例的 prompt 级经验复用」，不叫「自进化 / 自学习」。**
+   没有梯度更新、没有策略迭代，只是把历史成功案例注入 prompt。
+   `experience.py` 的 `rating` 默认**由执行结果推导**（全成功=5 / 部分=3 / 全失败=1），
+   它衡量"这轮规划**执行**成功了吗"，**不是"用户满意吗"**；满意度只能靠
+   `POST /api/memory/feedback` 的显式反馈，字段 `rating_source` 如实区分两者。
+2. **心镜的 `random.sample` 必须不要照搬**。它对候选随机抽样，导致同一 category
+   每次注入不同案例 —— 输入相同、注入不同，**"自进化有没有用"这个问题在那种实现下
+   无法被验证**。本项目用确定性排序 `rating*2 + 关键词重合度`，
+   `tests_memory.py` 有守门断言：同样输入两次检索结果必须完全相同。
+3. **日报里"今日动作数"是下界，不是总数**。`StateStore.audit_log` 是环形缓冲
+   （上限 `store.max_log`，现为 2000），超出部分已被丢弃。返回体
+   `facts.actions.note` 会如实标注这一点，**不要**在文档里把它写成"今天执行了 N 次操作"。
 
 完整方案：`C:\Users\Lenovo\.claude\plans\c-users-lenovo-desktop-aigc5-1-xinjing-federated-perlis.md`
 实验依据：`experiments/README.md`（**改动决策前先看它**，避免重复已被否决的路线）
@@ -265,8 +337,40 @@ curl -X POST localhost:8000/api/tools/call -H "Content-Type: application/json" \
 改为上述 Design B。ReAct 写入 Future Work 并附实测数据作为不采用的理由 ——
 在申报书里这属于"实证判断力"，比堆机制更有说服力。
 
+阶段 4 已修复（记忆与快慢双环）：
+- ~~D23~~ **事件路由可自动执行高危动作（高危漏洞）**　**已修**
+  事件路由是**无人确认**的路径（无弹窗、无人点确认），但它此前直接调
+  `registry.control()`，无租约、无版本校验、无高危确认。只要有人往
+  `event_routes.json` 加一条指向门锁/燃气灶的联动，门锁就会在无人值守时被打开。
+  **与「高危动作必须二次确认」的宣称直接矛盾。**
+  修法：`_refuse_high_risk()` 默认拒绝，需自动执行必须显式写
+  `"allow_high_risk": true`（决定被写下来、被评审看到）。
+  `tests_loops.py` 第 2 节是它的守门测试，且**先断言"该联动确实被路由命中"** ——
+  否则"什么都没发生"会被误读成"高危被拒绝了"（写这条测试时真的踩到过：
+  直接塞 `router.raw` 会被 `route()` 的热重载覆盖，得到空动作列表的假通过）
+- ~~D24~~ **测试污染真实用户数据**　**已修**
+  测试直接写 `backend/knowledge/user_habits.json`，累积几千次调用后
+  `total_commands` 达到 11046、场景 home 达 1842 次。界面上会把这些**测试噪声**
+  显示成"用户习惯"。修法：运行时状态统一进 `data/`，测试用 `LINGXI_DATA_DIR`
+  指向临时目录；旧数据有一次性的迁移读取（**只在规范目录发生**，临时目录不迁移，
+  否则测试会导入生产数据、断言不可复现）。
+- ~~D25~~ **测试断言取决于跑测试的钟点**　**已修**
+  `tests_perception.py` 服务层用例用 `datetime.now()`，而 `late_night_activity`
+  规则在 23:00–05:00 生效 —— 同一份代码 22:00 绿、23:01 红（实测复现）。
+  修法：显式钉死 `now`，并补一对断言（同样输入换到下午就不再判为 anomaly）
+  作为"时间必须可注入"的守门测试。`/api/perception/observe` 加 `now_hour`，
+  演示时不必等到深夜也能复现该场景。
+- ~~（测试）~~ `tests_capabilities.py` 断言"被忽略的路由数 == 3"**已修**
+  （改成对配置里路由总数取数）—— 加了 7 条环境联动路由后它假失败
+- ~~（一致性）~~ `EventRouter.route()` 对多动作 fan-out 一律并行 **已修**
+  同一台设备上的多条动作现在串行（`same_device` 判定），否则
+  「turn_on 再 set_temperature」可能颠倒，回读证据链会出现瞬时不一致
+
 待处理：
 - **D6** `root_agent.py` 设备正则仍偏宽（`if "空调" in text` 之类），已排在能力契约之后
   缓解，但未根治 → 阶段 2 前评估是否值得继续投入
 - **D7** 租约参数包络未实现；`_execute` 用 `is_expired` 绕过版本校验 → 阶段 2
 - **D9** `.env` 含真实智谱 API Key，**需轮换**（属红线操作，须用户确认后执行）→ 待办
+- **D26** 记忆层的偏好一致性校验只覆盖温度/亮度两个键（`_OBSERVED_ATTR`）。
+  够用且诚实（没有推断，只有这两类有稳定的"声明值 vs 观察值"对应），
+  但不要在文档里写成"支持全部偏好类型"

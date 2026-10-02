@@ -16,9 +16,12 @@
 | 白盒情境参数 | 5 个参数（在家时长 / 活动强度 / 作息偏离 / 舒适度偏差 / 异常标志），每个带真值来源与原始依据，可展开复核 |
 | 可信执行链 | 授权租约 + 状态版本校验 + 参数校验 + 高危二次确认 + 回读三态证据（confirmed/delivered/failed） |
 | 能力注册表 | 能力契约与设备类别解耦 + 39 条口语别名归一（「好热」→ climate.set_temperature）+ 孪生配对（可执行数字孪生） |
-| 事件路由引擎 | 声明式事件路由（跌倒看护/离家节能/隐患预警）+ 冷却去重 + fan-out 并发 + 回读确认证据链 |
+| 事件路由引擎 | 声明式事件路由（跌倒看护/离家节能/环境联动/隐患预警）+ 冷却去重 + **高危动作默认拒绝** + 回读确认证据链 |
+| **记忆三源** | 设备手册检索 + 习惯统计（含「显式声明 vs 实际行为」偏好一致性校验）+ 经验复用（成功案例回灌慢环 prompt，**确定性排序**，可复核注入了哪几条） |
+| **快慢双环** | 内环：2s 状态 / 5s 声明式阈值告警 / 15s 感知评估（**零 LLM**）。外环：22:00 家庭日报（**LLM 优先，模板降级**，断网也出文案） |
+| **可观测性** | IP 滑窗限流（普通 300/min、LLM 10/min，加锁）+ API 统计 + 模型调用日志 + **决策分层延迟**（规则层 p95 与慢环 p95 分开报） |
 | 数字人 | 低成本 SVG 形象"小智"+ 说话口型动画 + 状态提示 |
-| 交互 | 自然语言对话（支持一句话多条指令）、6 大场景模式按钮、实时设备状态面板、传感器面板 |
+| 交互 | 自然语言对话（支持一句话多条指令）、6 大场景模式按钮、实时设备状态面板、传感器面板、家庭情境看板、记忆与观测面板 |
 
 ## 二、目录结构
 
@@ -43,10 +46,20 @@ smart-home-controller/
 │   │   ├── service.py              感知入口：模态 → 融合 → 门控 → 询问式建议
 │   │   ├── gpu.py                  算力后端探测（当前无热路径，见文件头说明）
 │   │   └── modalities/             视觉行为 / 环境行为 / 面部表情(演示级) / 前庭(适配器)
+│   ├── memory/                   ★ 记忆层三源（只读世界，不写世界）
+│   │   ├── manuals.py              设备手册检索（含共用相关度打分函数）
+│   │   ├── habits.py               习惯统计 + 显式偏好一致性校验
+│   │   └── experience.py           经验复用（成功案例回灌 prompt，确定性排序）
+│   ├── observability/            ★ 可观测性三件套（全部加锁）
+│   │   ├── rate_limit.py           IP 滑窗限流
+│   │   ├── api_log.py              API 统计
+│   │   └── llm_log.py              模型调用日志 + 决策分层延迟
+│   ├── jobs/daily_summary.py     ★ 外环：22:00 家庭日报（LLM 优先 / 模板降级）
+│   ├── alerts.py                 ★ 内环告警：读数 → 声明式阈值 → 结构化事件
 │   ├── lease.py                 授权租约 + 高危操作策略（lock/gas_stove/camera）
 │   ├── state.py                 单一真相源：版本递增 + 审计日志 + pending 队列
 │   ├── capabilities.py          能力契约 + 口语别名归一 + 孪生配对
-│   ├── event_routes.py          声明式事件路由（冷却去重 + fan-out 并发）
+│   ├── event_routes.py          声明式事件路由（冷却去重 + 同设备串行 + 高危默认拒绝）
 │   ├── edge_cloud.py            端云隐私分级（L0/L1/L2）+ 脱敏 + 上云审计
 │   ├── multimodal.py            端侧视觉事件检测（画面本地处理，不上云）
 │   ├── mcp.py                   MCP Server（JSON-RPC 2.0）
@@ -62,7 +75,10 @@ smart-home-controller/
 │   │   ├── scenes.json            10 个场景
 │   │   ├── environment.json       传感器 / 昼夜循环 / 联动系数 / 告警阈值
 │   │   ├── capabilities.json      16 条能力契约 + 39 条口语别名
-│   │   └── event_routes.json      3 条事件路由
+│   │   ├── event_routes.json      10 条事件路由（跌倒看护/离家节能/隐患/环境联动/设备健康）
+│   │   ├── alert_routes.json      5 条内环告警阈值（声明式，改阈值不改代码）
+│   │   ├── situation_mapping.json 情境参数权重 + 区域判定规则（声明式）
+│   │   └── loops.json             快慢双环周期与外环日报时刻（演示时可现改）
 │   ├── devices/                 设备抽象层
 │   │   ├── schema.py              Device / Attribute / Command 模型
 │   │   ├── virtual_devices.py     虚拟设备驱动 + apply_command 命令语义
@@ -142,14 +158,25 @@ LLM_MODEL=deepseek-chat
 | GET | `/api/capabilities` | 能力清单 + 口语别名表 + 孪生对状态（可执行数字孪生） |
 | POST | `/api/events/route` | 注入结构化事件，路由为设备动作 + 告警（含回读证据） |
 | GET | `/api/perception` | 最近一次感知结果（模态读数 + 门控 + 5 个情境参数 + 询问式建议） |
-| POST | `/api/perception/observe` | 按给定上下文跑一次感知（演示用，只出建议不出动作） |
+| POST | `/api/perception/observe` | 按给定上下文跑一次感知（演示用，只出建议不出动作）。支持 `now_hour` 指定判定时刻，演示深夜场景不必等到深夜 |
 | GET | `/api/perception/status` | 感知层状态：模态可用性 / 门控阈值 / 算力后端 |
-| WS | `/ws` | 实时双向（指令上行 + 状态/传感器/回复下行） |
+| GET | `/api/memory/stats` | 记忆三源统计（手册 / 习惯 / 经验），含偏好冲突与评分来源区分 |
+| GET | `/api/memory/experience` | 检索经验库（与慢环 prompt 注入用**同一个确定性排序**，所见即模型所见） |
+| POST | `/api/memory/feedback` | 用户显式评分 `{id, rating 1-5, feedback}` —— 经验库中唯一衡量满意度的信号 |
+| GET | `/api/metrics/llm` | **分层延迟**（规则层/慢环 avg+p95）、降级率、token、最近调用 |
+| GET | `/api/metrics/api` | 接口统计 + 限流状态 + 感知层/告警层状态 |
+| GET | `/api/alerts/config` | 当前生效的告警阈值（阈值不在代码里，在这个 JSON 里，可复核） |
+| POST | `/api/alerts/evaluate` | 按给定读数**预演**告警判定（dry-run，不产生任何设备动作，不污染冷却状态） |
+| GET | `/api/jobs/status` | 调度器状态：内部作业（日报）下次触发时刻 |
+| GET | `/api/jobs/daily_summary/latest` | 最近一份家庭日报 |
+| POST | `/api/jobs/daily_summary/run` | 手动生成日报（演示用，不必等到 22:00），走与定时任务**同一条**路径 |
+| WS | `/ws` | 实时双向（指令上行 + 状态/传感器/回复/日报下行） |
 
 ## 七、验证与测试
 
 ```bash
-# 全量门禁（每个阶段收尾必须 8 脚本全绿）
+# 全量门禁（每个阶段收尾必须 12 脚本全绿）
+export LINGXI_DATA_DIR=$(mktemp -d)          # 隔离运行时数据，勿写真实用户数据
 LLM_OFFLINE=1 python tests_smoke.py         # 设备层 + 规则决策冒烟
 LLM_OFFLINE=1 python tests_agents.py        # 租约 / 版本校验 / 幻觉拦截 / 高危二次确认
 LLM_OFFLINE=1 python tests_capabilities.py  # 能力注册表 + 事件路由 + 执行契约（30 项）
@@ -157,7 +184,10 @@ LLM_OFFLINE=1 python tests_edge_cloud.py    # 隐私分级 / 脱敏 / 端云路�
 LLM_OFFLINE=1 python tests_error.py         # 7 类异常与边界输入（26 项）
 LLM_OFFLINE=1 python tests_funnel.py        # 五级漏斗优先级 + 架构不变量 + 护栏不被绕过（48 项）
 LLM_OFFLINE=1 python tests_budget.py        # 慢环预算：次数/墙钟/超时上限 + 降级可见（25 项）
-LLM_OFFLINE=1 python tests_perception.py    # 融合/门控/情境参数 + 感知层硬边界静态检查（103 项）
+LLM_OFFLINE=1 python tests_perception.py    # 融合/门控/情境参数 + 感知层硬边界静态检查（106 项）
+LLM_OFFLINE=1 python tests_memory.py        # 记忆三源 + 经验复用闭环 + 记忆层无执行能力（66 项）
+LLM_OFFLINE=1 python tests_observability.py # 限流并发安全 / 分层延迟 / 降级率（48 项）
+LLM_OFFLINE=1 python tests_loops.py         # 内环告警 / 外环日报降级 / 事件路由高危拒绝（68 项）
 LLM_OFFLINE=1 python tests_performance.py   # 量化验收指标
 
 # 演示脚本
@@ -185,6 +215,12 @@ LLM_OFFLINE=1 python tests_performance.py
 | 决策准确率（标准场景集 S1–S11） | ≥ 90% | 离线 100%（90/90） | ✅ |
 | 前端渲染帧率 | ≥ 30 FPS | 待浏览器实测 | — |
 | 慢环 LLM 端到端延迟 | < 5s | **11.6–14.0s** | ❌ 见下 |
+| 慢环降级率 | 无红线，但须可见 | 见 `/api/metrics/llm` | — |
+
+> **分层延迟不要合成一个数**：规则层是纯内存查表（毫秒），慢环是模型生成（秒），
+> 合成「平均响应时间」既不能解释性能也不能解释体验。`/api/metrics/llm` 返回
+> 真实决策样本的 `rule_path` / `slow_path` 各自的 avg 与 p95，**评委可当场调这个接口对**，
+> 不要在文档里手填数字。
 
 > **关于慢环延迟（2026-10-02 实测）**：单次调用 5.2–8.7s，而最小请求基线仅 642ms ——
 > 瓶颈在**模型生成速度**，不在网络、调用次数或 prompt 体积。Manager 的逐子任务翻译已
@@ -192,15 +228,27 @@ LLM_OFFLINE=1 python tests_performance.py
 > 故本项目**不声称慢环 P95 <5s**，而是走「预算化降级、P95 有界」；换更快模型或本地推理
 > 即可线性改善。规则层 7.4ms 是确定性路径，无外部依赖。
 
-## 八、后续路线
+## 八、演示建议（阶段 4 新增的部分）
+
+| 演示动作 | 看点 |
+|---|---|
+| 点开右上「记忆与观测」面板 | **分层延迟**：规则层 avg/p95 与慢环 avg/p95 分开显示，降级率可见 |
+| 对着空调说几句「有点闷」类模糊指令（须走到慢环） | 决策链路里出现紫色的 **RECALL** 步：写明本轮参考了哪条历史案例、评分多少 |
+| `curl /api/memory/stats` | 经验库条数与**评分来源区分**（`auto_execution` 是执行结果，`user` 才是满意度） |
+| 点「生成」按钮 | 日报当场出（不必等 22:00）。**拔掉 API Key / `LLM_OFFLINE=1` 再点一次** → 标签从「LLM 生成」变「模板降级」，文案仍有信息量 |
+| 把 `config/alert_routes.json` 温度阈值改成 25 | 5 秒内数字人告警 + 空调自动调到 24℃（阈值在配置里，不改代码不重启） |
+| `POST /api/alerts/evaluate` 传 `{"sensors":{"temp_indoor":33}}` | 预演判定，**不产生任何设备动作**，也不污染正在跑的告警冷却 |
+| `POST /api/perception/observe` 传 `now_hour: 2` | 深夜场景当场复现（否则要等到凌晨 2 点才能演示「深夜活动」判定） |
+
+## 九、后续路线
 
 详见 `docs/融合技术白皮书.md`。近期方向：
 
-- **感知层**：多模态置信度融合（视觉行为 + 面部表情 + 环境行为 + 前庭振动），
-  模态一致性复核；全部端侧推理，仅标签出网
-- **记忆层**：习惯统计 + 设备手册 + 成功案例经验复用三源
-- **快慢双环**：秒级控制环（已有）+ 22:00 家庭日报生成环（LLM 优先 / 模板降级）
-- **决策层**：五级意图漏斗 + prompt-based ReAct 慢环（适配不支持 function calling 的国产模型）
+- **护栏加固**：租约参数包络 + `verify` 全路径（阶段 2）
+- **文档与竞赛资产**：融合技术白皮书 / 架构图 / BENCH / 感知层可靠性报告 / 答辩 Q&A（阶段 5）
+- **决策层**：prompt-based ReAct 慢环 —— **已实测否决**（格式遵循度 80% 且延迟无优势），
+  写入 Future Work 并附数据，见 `experiments/README.md`
 - **数字人升级**：Live2D / ReadyPlayerMe + uLipSync（3D 化）
 - **真实设备**：Matter / Home Assistant 协议对接（替换虚拟设备驱动，能力契约不变）
 - **国产算力**：感知层计算密集路径接入 MUSA→CUDA→numpy 自动探测链
+  （**当前无热路径，不得作为成果主张** —— `gpu.status()` 会明确警告）

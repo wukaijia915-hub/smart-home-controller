@@ -85,6 +85,40 @@
       </div>
     </div>
 
+    <div id="ins-panel" class="panel">
+      <div class="panel-title">
+        记忆与观测
+        <span id="ins-src-tag" class="ins-tag">--</span>
+      </div>
+      <div class="ins-grid">
+        <div class="ins-item">
+          <span class="ins-name">规则层 avg / p95</span>
+          <span class="ins-val" id="ins-rule">--</span>
+        </div>
+        <div class="ins-item">
+          <span class="ins-name">慢环 avg / p95</span>
+          <span class="ins-val" id="ins-slow">--</span>
+        </div>
+        <div class="ins-item">
+          <span class="ins-name">慢环降级率</span>
+          <span class="ins-val" id="ins-degrade">--</span>
+        </div>
+        <div class="ins-item">
+          <span class="ins-name">经验库 / 平均执行分</span>
+          <span class="ins-val" id="ins-exp">--</span>
+        </div>
+      </div>
+      <div id="ins-summary">
+        <div class="ins-sum-head">
+          <span>今日家庭小结</span>
+          <span id="ins-sum-src" class="ins-tag">--</span>
+          <button id="ins-sum-btn" title="立即生成一份日报（演示用，不必等到 22:00）">生成</button>
+        </div>
+        <div id="ins-sum-body" class="ins-sum-body">尚未生成。点击「生成」或等到每日 22:00。</div>
+      </div>
+      <div id="ins-hint">分层延迟取自真实决策样本；经验库评分来自执行结果，用户评分另计</div>
+    </div>
+
     <div id="schedule-panel" class="panel">
       <div class="panel-title">定时任务</div>
       <div id="schedule-list" style="margin-bottom:8px;font-size:12px;color:var(--text-dim);">暂无定时任务</div>
