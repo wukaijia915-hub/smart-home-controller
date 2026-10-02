@@ -9,6 +9,7 @@
 import os
 import re
 import sys
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -223,6 +224,15 @@ from backend.perception.service import ROUTED_ELSEWHERE
 
 svc = PerceptionService()
 
+# 服务层测试一律**显式钉住时刻**。
+# `late_night_activity` 规则在 23:00-05:00 生效，而这一段的 `PerceptionContext`
+# 原本没传 `now` → 走 `datetime.now()`。结果同一份测试 22:00 跑是绿的、
+# 23:01 跑就红（已实测复现：本机 23:01 复跑，三条 region 断言全部失败，
+# 而代码一行没改）。凡是"结果取决于跑测试的钟点"的断言都是定时炸弹 ——
+# 深夜演示或凌晨 CI 会莫名其妙地红，且没人会想到是时间导致的。
+T14 = datetime(2026, 10, 2, 14, 0)      # 下午 2 点：安全锚点
+T02 = datetime(2026, 10, 2, 2, 0)       # 凌晨 2 点：用于显式测试深夜规则
+
 # 无任何输入 → 不编造读数、不给建议
 empty = svc.perceive(PerceptionContext())
 check("无输入：无读数", len(empty.readings) == 0, str(len(empty.readings)))
@@ -235,6 +245,7 @@ comfortable = PerceptionContext(
     recent_actions=[{"device_id": "light_living_01", "command": "turn_on"}] * 3,
     habit={"routine_deviation": 0.2},
     presence_minutes=120.0,          # 家中有人，否则会被判为 away
+    now=T14,
 )
 res = svc.perceive(comfortable)
 check("舒适环境：产出读数", len(res.readings) >= 1, str([r.modality for r in res.readings]))
@@ -251,6 +262,7 @@ uncomfortable = PerceptionContext(
     habit={"routine_deviation": 0.5},
     presence_minutes=120.0,
     idle_minutes=10.0,
+    now=T14,
 )
 res2 = svc.perceive(uncomfortable)
 check("不适环境：门控通过", res2.gate["passed"] is True, res2.gate.get("reason", ""))
@@ -267,7 +279,8 @@ check("不适环境被情境层识别",
 
 # 紧急事件 → 交由事件路由，感知层不重复
 fall = svc.perceive(PerceptionContext(scene_hint="跌倒",
-                                      sensors={"temp_indoor": 23.0}))
+                                      sensors={"temp_indoor": 23.0},
+                                      now=T14))
 has_fall = any(r.detail.get("event_type") in ROUTED_ELSEWHERE for r in fall.readings)
 check("跌倒事件被识别为已路由事件", has_fall,
       str([r.detail.get("event_type") for r in fall.readings]))
@@ -289,6 +302,7 @@ conflict_ctx = PerceptionContext(
     habit={"routine_deviation": 1.0},
     presence_minutes=120.0,
     idle_minutes=5.0,
+    now=T14,
 )
 cres = conflict_svc.perceive(conflict_ctx)
 check("模态冲突时门控不通过", cres.gate["passed"] is False,
@@ -306,6 +320,7 @@ conflict_discomfort = conflict_svc.perceive(PerceptionContext(
     habit={"routine_deviation": 1.0},
     presence_minutes=120.0,
     idle_minutes=5.0,
+    now=T14,
 ))
 check("情境异常不因多模态冲突而被压掉（独立证据）",
       conflict_discomfort.situation["region"] == "discomfort"
@@ -313,6 +328,36 @@ check("情境异常不因多模态冲突而被压掉（独立证据）",
       and conflict_discomfort.suggestion is not None,
       f"region={conflict_discomfort.situation['region']} "
       f"gate={conflict_discomfort.gate['passed']}")
+
+# 深夜活动 → anomaly（走服务层路径，与 /api/perception/observe 同一条）
+night_svc = svc.perceive(PerceptionContext(
+    sensors={"temp_indoor": 23.0, "humidity": 50.0, "air_quality": 85.0},
+    recent_actions=[{"a": 1}] * 5,
+    habit={"routine_deviation": 0.2},
+    presence_minutes=120.0,
+    idle_minutes=3.0,
+    now=T02,
+))
+check("服务层路径：深夜活动判为 anomaly",
+      night_svc.situation["region"] == "anomaly", night_svc.situation["region"])
+check("深夜依据可复核（含触发小时与阈值）",
+      night_svc.situation["params"]["anomaly_count"]["evidence"]
+      ["late_night_activity"]["hour"] == 2,
+      str(night_svc.situation["params"]["anomaly_count"]["evidence"].get("late_night_activity")))
+
+# 同一份输入、只换成下午 → 不再判为异常。
+# 这一对断言是"时间依赖"的守门测试：如果哪天有人把 now 漏掉，
+# 这两条里必然有一条会红，而不是等到某个深夜才红。
+day_svc = svc.perceive(PerceptionContext(
+    sensors={"temp_indoor": 23.0, "humidity": 50.0, "air_quality": 85.0},
+    recent_actions=[{"a": 1}] * 5,
+    habit={"routine_deviation": 0.2},
+    presence_minutes=120.0,
+    idle_minutes=3.0,
+    now=T14,
+))
+check("★ 同样输入换到下午不再判为 anomaly（时间必须可注入，不能取系统时钟）",
+      day_svc.situation["region"] != "anomaly", day_svc.situation["region"])
 
 # 可选模态不可用 → 优雅降级，不编造
 face = FacialExpressionModality()

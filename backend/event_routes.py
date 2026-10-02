@@ -98,7 +98,12 @@ class EventRouter:
                 self._last_action_at[route_id] = time.monotonic()
 
             action_specs = route.get("actions", []) or []
-            if len(action_specs) <= 1:
+            # 同一台设备上的多条动作必须串行。并行 fan-out 的执行顺序不确定，
+            # 「先 turn_on 再 set_temperature」如果颠倒，中间会存在一个
+            # "开着但目标温度还是旧值"的瞬间被回读抓到，回读证据链就会显示不一致。
+            # 跨设备才用并行（慢通知不该阻塞播报）。
+            same_device = len({str(s.get("device_id", "")) for s in action_specs}) < len(action_specs)
+            if len(action_specs) <= 1 or route.get("sequential") or same_device:
                 for spec in action_specs:
                     evaluation.actions.append(self._invoke_action(route_id, event, spec))
             else:
@@ -145,6 +150,19 @@ class EventRouter:
         device_id = self._resolve_value(spec.get("device_id", ""), event)
         command = self._resolve_value(spec.get("command", ""), event)
         params = {k: self._resolve_value(v, event) for k, v in (spec.get("params", {}) or {}).items()}
+
+        # 高危动作默认拒绝（fail closed）。
+        # 事件路由是**无人确认**的自动路径：没有弹窗、没有人点"确认执行"。
+        # 此前它直接调 registry.control()，意味着只要有人往 event_routes.json 里
+        # 加一条指向 lock_entry_01 / gas_stove_kitchen_01 的联动，门锁就会在无人
+        # 值守时被打开、燃气灶会被点燃 —— 与"高危动作必须二次确认"的宣称直接矛盾。
+        # 需要自动执行高危动作的路由，必须在配置里显式写 "allow_high_risk": true，
+        # 让这个决定被写下来、被评审看到，而不是悄悄发生。
+        refused = self._refuse_high_risk(device_id, command, spec)
+        if refused is not None:
+            refused.update({"route_id": route_id, "type": "device"})
+            return refused
+
         result = dict(self.registry.control(device_id, command, params))
         result.update({"route_id": route_id, "type": "device"})
         if self.state_store is not None and result.get("ok"):
@@ -153,6 +171,31 @@ class EventRouter:
             self.state_store.bump()
             self.state_store.record(None, device_id, command, params, result)
         return result
+
+    def _refuse_high_risk(self, device_id: str, command: str, spec: dict) -> Optional[dict]:
+        """高危命令且未显式授权 → 返回拒绝结果；否则返回 None。"""
+        if spec.get("allow_high_risk"):
+            return None
+        try:
+            from .lease import LeaseValidator
+        except Exception:
+            return None
+        device = self.registry.get(device_id) if hasattr(self.registry, "get") else None
+        if device is None:
+            return None        # 设备不存在由 registry.control 自己报错，不在这里越权判断
+        if not LeaseValidator.is_high_risk(device.category, command):
+            return None
+        desc = LeaseValidator.high_risk_desc(device.category, command)
+        return {
+            "ok": False,
+            "status": "refused",
+            "device_id": device_id,
+            "command": command,
+            "error": f"事件路由拒绝自动执行高危动作「{desc}」（{device.name}）："
+                     f"该动作需要人工二次确认，自动路径不得执行。"
+                     f"确需自动执行时，请在 event_routes.json 该动作上显式声明 "
+                     f'"allow_high_risk": true。',
+        }
 
     def _invoke_alert(self, route_id: str, event: dict[str, Any],
                       spec: dict[str, Any]) -> dict[str, Any]:

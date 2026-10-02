@@ -63,6 +63,156 @@
           "message_template": "⚠️ 端侧检测到安全隐患（如明火/水渍），建议立即检查。"
         }
       ]
+    },
+    {
+      "id": "env_temp_high",
+      "desc": "环境联动·高温：内环阈值告警(config/alert_routes.json) → 开客厅空调至 24℃ + 播报。文案取自事件的 payload.summary，不在两处各写一遍。",
+      "cooldown_seconds": 120,
+      "match": {
+        "event_types": ["climate_anomaly"],
+        "payload_equals": {"kind": "temp_high"}
+      },
+      "actions": [
+        {
+          "type": "device",
+          "device_id": "ac_living_01",
+          "command": "turn_on",
+          "params": {}
+        },
+        {
+          "type": "device",
+          "device_id": "ac_living_01",
+          "command": "set_temperature",
+          "params": {"temperature": 24}
+        },
+        {
+          "type": "alert",
+          "message_template": "{summary}"
+        }
+      ]
+    },
+    {
+      "id": "env_temp_low",
+      "desc": "环境联动·低温：空调切制热并升到 26℃ + 播报",
+      "cooldown_seconds": 120,
+      "match": {
+        "event_types": ["climate_anomaly"],
+        "payload_equals": {"kind": "temp_low"}
+      },
+      "actions": [
+        {
+          "type": "device",
+          "device_id": "ac_living_01",
+          "command": "turn_on",
+          "params": {}
+        },
+        {
+          "type": "device",
+          "device_id": "ac_living_01",
+          "command": "set_mode",
+          "params": {"mode": "heat"}
+        },
+        {
+          "type": "device",
+          "device_id": "ac_living_01",
+          "command": "set_temperature",
+          "params": {"temperature": 26}
+        },
+        {
+          "type": "alert",
+          "message_template": "{summary}"
+        }
+      ]
+    },
+    {
+      "id": "env_air_poor",
+      "desc": "环境联动·空气质量差：开风扇促进空气循环 + 播报建议开窗。不虚构'新风系统'——本项目没有该设备，只说真实存在的动作。",
+      "cooldown_seconds": 300,
+      "match": {
+        "event_types": ["air_quality_anomaly"],
+        "payload_equals": {"kind": "air_poor"}
+      },
+      "actions": [
+        {
+          "type": "device",
+          "device_id": "fan_living_01",
+          "command": "turn_on",
+          "params": {}
+        },
+        {
+          "type": "alert",
+          "message_template": "{summary}"
+        }
+      ]
+    },
+    {
+      "id": "env_humidity_low",
+      "desc": "环境联动·干燥：开加湿器到 55% + 播报",
+      "cooldown_seconds": 600,
+      "match": {
+        "event_types": ["climate_anomaly"],
+        "payload_equals": {"kind": "humidity_low"}
+      },
+      "actions": [
+        {
+          "type": "device",
+          "device_id": "humidifier_living_01",
+          "command": "turn_on",
+          "params": {}
+        },
+        {
+          "type": "device",
+          "device_id": "humidifier_living_01",
+          "command": "set_target",
+          "params": {"target": 55}
+        },
+        {
+          "type": "alert",
+          "message_template": "{summary}"
+        }
+      ]
+    },
+    {
+      "id": "hint_light_low",
+      "desc": "环境联动·偏暗补光：有人活动且光照不足 → 客厅灯补到 60% + 播报。仅提醒不改设备的话，这条联动就没有演示价值；改设备又不该悄悄发生 —— 因此它写在配置里、可被评审看到。",
+      "cooldown_seconds": 600,
+      "match": {
+        "event_types": ["lighting_hint"],
+        "payload_equals": {"kind": "light_low_occupied"}
+      },
+      "actions": [
+        {
+          "type": "device",
+          "device_id": "light_living_01",
+          "command": "turn_on",
+          "params": {}
+        },
+        {
+          "type": "device",
+          "device_id": "light_living_01",
+          "command": "set_brightness",
+          "params": {"brightness": 60}
+        },
+        {
+          "type": "alert",
+          "message_template": "{summary}"
+        }
+      ]
+    },
+    {
+      "id": "device_health_alert",
+      "desc": "设备健康：离线/故障仅播报，不尝试'修复'——离线设备本来就收不到指令，发动作只会产生一条假的失败记录。",
+      "cooldown_seconds": 300,
+      "match": {
+        "event_types": ["device_health"],
+        "severity_at_least": "warning"
+      },
+      "actions": [
+        {
+          "type": "alert",
+          "message_template": "⚠️ {summary}"
+        }
+      ]
     }
   ]
 }
