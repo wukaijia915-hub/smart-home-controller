@@ -25,6 +25,7 @@ const $ = (id) => document.getElementById(id);
     initSpeechRecognition();
     bindTtsToggle();
     initSchedule();
+    initPerception();
     connect();
 
     setTimeout(() => {
@@ -94,6 +95,14 @@ const $ = (id) => document.getElementById(id);
         addMessage('assistant', '小智', '⚠️ ' + msg.message);
         DigitalHuman.setStatus('检测到异常，正在提醒');
         speakText(msg.message);
+        break;
+      case 'perception_suggestion':
+        // 感知层建议：**只是问句，不代表系统已执行任何设备动作**
+        // （后端广播体带 actionable_by_system:false 明确这一点）
+        addMessage('assistant', '小智', '💡 ' + msg.suggestion);
+        DigitalHuman.setStatus('监测到情境变化，向您确认');
+        speakText(msg.suggestion);
+        loadPerception();
         break;
     }
   }
@@ -411,5 +420,81 @@ const $ = (id) => document.getElementById(id);
   window.delSchedule = function(id) {
     fetch(`/api/schedule/tasks/${id}`, { method: 'DELETE' }).then(() => loadSchedule());
   };
+
+  // ---------- 家庭情境看板（白盒参数，可展开原始依据）----------
+  // 展示感知层的判断与它的**依据**：每个参数都能点开看到真值来源、计算方式与原始数据。
+  // 这是把"可解释性"从口号变成可查证据的地方，也是答辩时最该演示的面板。
+  let sitExpanded = {};        // 记住展开状态，避免轮询刷新时收起
+
+  function initPerception() {
+    loadPerception();
+    setInterval(loadPerception, 10000);
+  }
+
+  function loadPerception() {
+    fetch('/api/perception')
+      .then((r) => r.json())
+      .then((d) => { if (d && d.situation) renderPerception(d); })
+      .catch(() => { /* 感知层不可用不应影响其它面板 */ });
+  }
+
+  function fmtParamValue(p) {
+    const v = typeof p.value === 'number' ? Math.round(p.value * 100) / 100 : p.value;
+    const unit = (p.unit && p.unit.length <= 4) ? p.unit : '';
+    return `${v}${unit}`;
+  }
+
+  function paramDetailHtml(p) {
+    const ev = (p.evidence && Object.keys(p.evidence).length)
+      ? JSON.stringify(p.evidence, null, 1) : '（无）';
+    const note = p.note ? `<span class="sit-note">⚠ ${escapeHtml(p.note)}</span>\n` : '';
+    return `${note}<b>真值来源</b>：${escapeHtml(p.truth || '-')}\n`
+         + `<b>计算依据</b>：${escapeHtml(p.source || '-')}\n`
+         + `<b>置信度</b>：${(p.confidence != null ? p.confidence : 1)}\n`
+         + `<b>原始数据</b>：${escapeHtml(ev)}`;
+  }
+
+  function renderPerception(d) {
+    const sit = d.situation || {};
+    const tag = $('sit-region');
+    if (tag) {
+      tag.textContent = (sit.region_label || '--').split('（')[0];
+      tag.className = 'sit-tag lv-' + (sit.region_level || 'info');
+    }
+
+    const box = $('sit-params');
+    if (!box) return;
+    const params = sit.params || {};
+    box.innerHTML = Object.keys(params).map((k) => {
+      const p = params[k];
+      const pct = Math.round((p.normalized || 0) * 100);
+      const lowConf = (p.confidence != null && p.confidence < 1);
+      const detail = sitExpanded[k] ? `<div class="sit-detail">${paramDetailHtml(p)}</div>` : '';
+      return `<div class="sit-row${lowConf ? ' low-conf' : ''}" data-param="${k}" title="点击查看原始依据">
+          <span class="sit-name">${escapeHtml(p.label)}</span>
+          <span class="sit-bar"><i style="width:${pct}%"></i></span>
+          <span class="sit-val">${fmtParamValue(p)}</span>
+        </div>${detail}`;
+    }).join('');
+
+    box.querySelectorAll('.sit-row').forEach((row) => {
+      row.addEventListener('click', () => {
+        const k = row.getAttribute('data-param');
+        sitExpanded[k] = !sitExpanded[k];
+        renderPerception(d);
+      });
+    });
+
+    const sug = $('sit-suggestion');
+    if (!sug) return;
+    if (d.suggestion) {
+      sug.style.display = 'block';
+      sug.innerHTML = `<span class="sit-sug-badge">建议 · 待您确认</span>`
+        + `${escapeHtml(d.suggestion)}`
+        + `<span class="sit-sug-basis">依据：${escapeHtml(d.suggestion_basis || '')}</span>`;
+    } else {
+      sug.style.display = 'none';
+    }
+  }
 
   window.addEventListener('DOMContentLoaded', init);

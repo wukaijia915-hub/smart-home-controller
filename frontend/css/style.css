@@ -472,3 +472,101 @@ html, body {
   border-color: #fbbf24;
 }
 .modal-actions button:hover { filter: brightness(1.1); }
+
+/* ---------- 家庭情境看板（白盒参数，可展开原始依据） ---------- */
+#situation-panel { margin-top: 10px; }
+#situation-panel .panel-title { display: flex; align-items: center; gap: 8px; }
+
+.sit-tag {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #22304a;
+  color: var(--text-dim);
+  border: 1px solid var(--panel-border);
+}
+.sit-tag.lv-warning { background: #3a2a12; color: #fbbf24; border-color: #6b4d15; }
+.sit-tag.lv-notice  { background: #2a3446; color: #7dd3fc; border-color: #35506e; }
+.sit-tag.lv-info    { background: #1f2e28; color: var(--accent-2); border-color: #2c4a3d; }
+
+#sit-params { display: flex; flex-direction: column; gap: 5px; }
+
+.sit-row {
+  display: grid;
+  grid-template-columns: 76px 1fr 42px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 3px 4px;
+  border-radius: 6px;
+}
+.sit-row:hover { background: #22304a; }
+.sit-row .sit-name { color: var(--text-dim); }
+.sit-row .sit-val { text-align: right; font-variant-numeric: tabular-nums; }
+
+.sit-bar {
+  height: 6px;
+  background: #141c2c;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.sit-bar > i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  border-radius: 3px;
+  transition: width .3s ease;
+}
+
+/* 低置信度参数降饱和显示，避免与可信参数混淆 */
+.sit-row.low-conf { opacity: .6; }
+.sit-row.low-conf .sit-bar > i { background: #6b7280; }
+
+.sit-detail {
+  font-size: 11px;
+  color: var(--text-dim);
+  background: #141c2c;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  padding: 7px 9px;
+  margin: 2px 0 6px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.5;
+}
+.sit-detail b { color: var(--accent-2); font-weight: 600; }
+.sit-detail .sit-note { color: #fbbf24; }
+
+.sit-suggestion {
+  margin-top: 9px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #1c2b3f;
+  border-left: 3px solid var(--accent);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.sit-suggestion .sit-sug-basis {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.sit-suggestion .sit-sug-badge {
+  display: inline-block;
+  margin-right: 6px;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #22304a;
+  color: var(--text-dim);
+}
+
+#sit-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  opacity: .7;
+}
