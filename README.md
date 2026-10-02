@@ -12,6 +12,8 @@
 | 多模态 Agent | 双层决策：①规则层（场景+设备指令，<100ms）②远端 LLM 推理层（结构化 JSON 输出，配置 API Key 后启用；无 Key 时全链路仍可演示） |
 | 设备抽象层 | Device/Attribute/Command schema + **17 台虚拟设备 / 12 个类别**（参考 Matter cluster / HA entity 模型） |
 | 工具层 | **64 个标准化工具**，schema 由设备属性元数据反推（永不漂移），支持 MCP 动态发现与调用 |
+| 多模态感知 | 4 路模态（视觉行为 / 环境行为 / 面部表情 / 前庭）→ 置信度自适应加权 → **一致性复核，冲突即丢弃**；原始画面不出户 |
+| 白盒情境参数 | 5 个参数（在家时长 / 活动强度 / 作息偏离 / 舒适度偏差 / 异常标志），每个带真值来源与原始依据，可展开复核 |
 | 可信执行链 | 授权租约 + 状态版本校验 + 参数校验 + 高危二次确认 + 回读三态证据（confirmed/delivered/failed） |
 | 能力注册表 | 能力契约与设备类别解耦 + 39 条口语别名归一（「好热」→ climate.set_temperature）+ 孪生配对（可执行数字孪生） |
 | 事件路由引擎 | 声明式事件路由（跌倒看护/离家节能/隐患预警）+ 冷却去重 + fan-out 并发 + 回读确认证据链 |
@@ -30,8 +32,17 @@ smart-home-controller/
 │   │   └── manager_agent.py       Manager：翻译 + 校验 + 执行（最后一道闸门）
 │   ├── toolkit/                 ★ 工具层：LLM 影响物理世界的唯一出口
 │   │   ├── schema_gen.py          从设备属性元数据反推工具契约（schema 永不漂移）
-│   │   └── registry.py            工具注册表 + 参数校验 + 调用日志（可审计）
+│   │   ├── registry.py            工具注册表 + 参数校验 + 调用日志（可审计）
+│   │   └── guard.py               ManagerGuard：工具路径复用 Manager 同一条护栏链
 │   ├── tools.py                 兼容垫片 → 转发到 toolkit/
+│   ├── gate.py                  ★ Gate 抽象（感知层与执行层共用同一套门控接口）
+│   ├── perception/               ★ 感知层
+│   │   ├── fusion.py               多模态置信度融合（移植心镜，二模态→N 模态）
+│   │   ├── modal_gate.py           MultiModalGate：一致性复核，冲突即丢弃
+│   │   ├── situation.py            5 个白盒情境参数（每个带真值来源与原始依据）
+│   │   ├── service.py              感知入口：模态 → 融合 → 门控 → 询问式建议
+│   │   ├── gpu.py                  算力后端探测（当前无热路径，见文件头说明）
+│   │   └── modalities/             视觉行为 / 环境行为 / 面部表情(演示级) / 前庭(适配器)
 │   ├── lease.py                 授权租约 + 高危操作策略（lock/gas_stove/camera）
 │   ├── state.py                 单一真相源：版本递增 + 审计日志 + pending 队列
 │   ├── capabilities.py          能力契约 + 口语别名归一 + 孪生配对
@@ -130,6 +141,9 @@ LLM_MODEL=deepseek-chat
 | POST | `/api/edge` | 边缘场景：模拟设备离线/故障 |
 | GET | `/api/capabilities` | 能力清单 + 口语别名表 + 孪生对状态（可执行数字孪生） |
 | POST | `/api/events/route` | 注入结构化事件，路由为设备动作 + 告警（含回读证据） |
+| GET | `/api/perception` | 最近一次感知结果（模态读数 + 门控 + 5 个情境参数 + 询问式建议） |
+| POST | `/api/perception/observe` | 按给定上下文跑一次感知（演示用，只出建议不出动作） |
+| GET | `/api/perception/status` | 感知层状态：模态可用性 / 门控阈值 / 算力后端 |
 | WS | `/ws` | 实时双向（指令上行 + 状态/传感器/回复下行） |
 
 ## 七、验证与测试
@@ -143,6 +157,7 @@ LLM_OFFLINE=1 python tests_edge_cloud.py    # 隐私分级 / 脱敏 / 端云路�
 LLM_OFFLINE=1 python tests_error.py         # 7 类异常与边界输入（26 项）
 LLM_OFFLINE=1 python tests_funnel.py        # 五级漏斗优先级 + 架构不变量 + 护栏不被绕过（48 项）
 LLM_OFFLINE=1 python tests_budget.py        # 慢环预算：次数/墙钟/超时上限 + 降级可见（25 项）
+LLM_OFFLINE=1 python tests_perception.py    # 融合/门控/情境参数 + 感知层硬边界静态检查（103 项）
 LLM_OFFLINE=1 python tests_performance.py   # 量化验收指标
 
 # 演示脚本

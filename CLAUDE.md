@@ -39,11 +39,14 @@ smart-home-controller/
 │   │   ├── views.py           root_tools() 只读 / manager_tools() 可写
 │   │   ├── meta_tools.py      元工具实现
 │   │   └── guard.py           ActuationGuard：工具层↔护栏层的唯一接缝
+│   ├── gate.py              ★ Gate 抽象（感知层与执行层共用）
 │   ├── perception/          ★ 感知层
-│   │   ├── fusion.py          多模态置信度融合
-│   │   ├── situation.py       白盒情境参数
-│   │   ├── gpu.py             国产算力探测链（MUSA→CUDA→numpy）
-│   │   └── modalities/        各模态检测器
+│   │   ├── fusion.py          多模态置信度融合（移植心镜，二模态→N 模态）
+│   │   ├── modal_gate.py      MultiModalGate：融合结果包成统一门控结果
+│   │   ├── situation.py       白盒情境参数（5 个，每个带真值来源与原始依据）
+│   │   ├── service.py         感知层入口：模态 → 融合 → 门控 → 询问式建议
+│   │   ├── gpu.py             算力后端探测（如实标注：当前无热路径，不是成果）
+│   │   └── modalities/        各模态检测器（视觉行为/环境行为/面部/前庭）
 │   ├── memory/              ★ 记忆层三源
 │   │   ├── habits.py          用户习惯统计
 │   │   ├── manuals.py         设备手册检索
@@ -178,7 +181,7 @@ curl -X POST localhost:8000/api/tools/call -H "Content-Type: application/json" \
 
 **红线（代码级不可违背）**
 
-1. **感知结果绝不进入控制回路**。`PERCEPTION_CANNOT_ACTUATE = True`。融合输出只能生成**询问式**话术（"要不要把灯调暖一点？"），绝不自动执行设备动作。
+1. **感知结果绝不进入控制回路**。`PERCEPTION_CANNOT_ACTUATE = True`。融合输出只能生成**询问式**话术（"要不要把灯调暖一点？"），绝不自动执行设备动作。`tests_perception.py` 第 7 节会**静态扫描** `backend/perception/` 下所有 .py，一旦出现 `registry.control(`、`Lease.issue`、或导入 DeviceRegistry/lease，测试即失败 —— 这条承诺靠代码评审守不住。
 2. **LLM 绝不直连设备**。LLM 只能通过 `toolkit` 的工具影响世界，且每个副作用工具内部强制走 `ActuationGuard`。
 3. **原始画面/音频绝不出家庭**。视觉链路一律端侧推理，只把结构化标签上云，复用 `edge_cloud` 的 L0 分级。
 4. **不做情绪测量**。面部表情等信号标注为**演示级**，如实报告验证边界，不做准确率承诺。
@@ -198,7 +201,9 @@ curl -X POST localhost:8000/api/tools/call -H "Content-Type: application/json" \
 - ✅ 阶段 1a 五级漏斗接线（技能 + 能力契约接入主链路、条件句保护）
 - ✅ 阶段 1b **Design B：LLM 单次提议 + Manager 纯护栏**（含四项实测实验）
 - ✅ `llm_budget.py` 慢环预算（次数/墙钟/单次超时 + 降级可见）
-- ⏳ 阶段 3　**感知层**（多模态置信度融合 / 白盒情境参数 / 国产算力链）
+- ✅ 阶段 3　**感知层**：Gate 抽象 / 多模态置信度融合 / 统一门控 / 四个模态 /
+  白盒情境参数 / 算力后端探测 / 感知端点
+  （前端「情境看板」尚未做；算力后端当前**无热路径**，不得作为成果主张）
 - ⏳ 阶段 2　租约包络与 `verify` 全路径（与阶段 3 改动文件不重叠，可穿插做）
 - ⏳ 阶段 4　记忆三源与快慢双环
 - ⏳ 阶段 5　文档与竞赛资产

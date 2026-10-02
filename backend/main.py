@@ -78,6 +78,25 @@ tool_registry.bind_actuation_guard(ManagerGuard(agent.manager))
 # state_store 必须注入：否则事件路径改状态不递增版本号，租约版本会与真相源脱节
 event_router = EventRouter(registry, manager, state_store=agent.store)
 
+# ---- 感知层（多模态置信度融合 + 白盒情境参数） ----
+from .perception import PerceptionContext, PerceptionService, PresenceTracker
+
+perception_service = PerceptionService()
+presence = PresenceTracker()          # 「在家时长」的真值来源，由 sensor_loop 喂入
+perception_state: dict = {}           # 最近一次感知结果（前端轮询）
+
+
+def _perception_context() -> PerceptionContext:
+    """从当前系统状态组装感知上下文。"""
+    recent = agent.store.get_audit(limit=30)
+    return PerceptionContext(
+        sensors=simulator.values,
+        recent_actions=recent,
+        habit={"routine_deviation": 1.0},   # 无历史基线时取中性值，置信度会相应下调
+        presence_minutes=presence.minutes,
+        idle_minutes=presence.idle_minutes(),
+    )
+
 
 def _twin_sync(device, attrs: dict) -> dict:
     """孪生同步回调：虚拟设备属性 → 实体侧占位适配器 → 回读一致性证据。"""
@@ -106,6 +125,10 @@ async def lifespan(app: FastAPI):
             await asyncio.sleep(2.0)
             simulator.tick()
             agent.sensors = simulator.values  # 注入 Agent 环境感知
+            # 喂感知层：PresenceTracker 需要时序才能算出「在家时长」
+            present = bool(simulator.values.get("motion_living")
+                           or simulator.values.get("motion_bedroom"))
+            presence.update(present)
             await manager.broadcast({"type": "sensor", "data": simulator.values})
 
     # 主动告警：环境异常/设备故障时数字人主动提示
@@ -158,11 +181,47 @@ async def lifespan(app: FastAPI):
     except ImportError as e:
         print(f"[调度器] 未启用定时任务（缺少依赖 {e}），请 pip install apscheduler")
 
+    # 感知层周期评估。
+    # ⚠️ 这里**只广播询问式建议，绝不触发任何设备动作** —— 感知结果进入控制回路
+    # 是本项目的硬边界（见 backend/perception/__init__.py 的 PERCEPTION_CANNOT_ACTUATE）。
+    # 同一句建议不重复播报，且带冷却，避免变成骚扰。
+    last_suggestion = {"text": "", "at": 0.0}
+    SUGGESTION_COOLDOWN = 300.0        # 秒
+    async def perception_loop():
+        while True:
+            await asyncio.sleep(15.0)
+            try:
+                result = perception_service.perceive(_perception_context())
+            except Exception as e:
+                print(f"[感知层] 评估失败（不影响其它功能）: {type(e).__name__}: {e}")
+                continue
+
+            perception_state.clear()
+            perception_state.update(result.to_dict())
+
+            text = result.suggestion
+            if not text or text == last_suggestion["text"]:
+                continue
+            now = asyncio.get_running_loop().time()
+            if now - last_suggestion["at"] < SUGGESTION_COOLDOWN:
+                continue
+            last_suggestion.update({"text": text, "at": now})
+            await manager.broadcast({
+                "type": "perception_suggestion",
+                "suggestion": text,
+                "basis": result.suggestion_basis,
+                "situation": result.situation,
+                # 前端据此确认：这是建议，不是已执行的动作
+                "actionable_by_system": False,
+            })
+
     task = asyncio.create_task(sensor_loop())
     alert_task = asyncio.create_task(alert_loop())
+    perception_task = asyncio.create_task(perception_loop())
     yield
     task.cancel()
     alert_task.cancel()
+    perception_task.cancel()
 
 
 app = FastAPI(title="智能家居数字人中枢", lifespan=lifespan)
@@ -461,6 +520,59 @@ async def api_edge_cloud_vision(body: dict):
     if event is None:
         return {"ok": True, "event": None, "alert": None, "note": "未检测到视觉事件"}
     return {"ok": True, "event": event.to_dict(), "alert": detector.event_to_alert(event)}
+
+
+# ---------- 感知层（多模态融合 + 白盒情境参数） ----------
+@app.get("/api/perception")
+async def api_perception():
+    """最近一次感知结果（前端情境看板轮询）。
+
+    返回各模态读数、融合门控结果、5 个白盒情境参数（含真值来源与原始依据）、
+    以及**询问式**建议。suggestion 为 None 表示当前无需打扰。
+    """
+    return {"ok": True, **(perception_state or {"note": "尚无感知结果，等待首个评估周期"})}
+
+
+@app.get("/api/perception/status")
+async def api_perception_status():
+    """感知层状态：各模态可用性、门控阈值、算力后端。"""
+    from .perception.gpu import status as gpu_status
+    return {"ok": True, **perception_service.status(), "accelerator": gpu_status()}
+
+
+@app.post("/api/perception/observe")
+async def api_perception_observe(body: dict):
+    """按给定上下文跑一次感知（演示/测试用，不影响后台周期评估）。
+
+    body（全部可选）：
+        scene_hint        端侧视觉检测提示，如"跌倒"/"有人"/"无人"
+        sensors           传感器读数覆盖
+        recent_actions    近期操作条数（用整数即可，如 5）
+        presence_minutes  在家时长（分钟）
+        idle_minutes      距上次活动分钟数
+        vestibular        前庭读数（可选）
+        face_frame        是否提供画面帧（bool；真实帧需另走接口）
+
+    返回建议为**问句或 None**，绝不会产生设备动作。
+    """
+    sensors = body.get("sensors")
+    sensors = dict(simulator.values) if sensors is None else dict(sensors)
+    count = body.get("recent_actions", 0)
+    recent = [{"source": "observe"}] * int(count if isinstance(count, int) else 0)
+
+    ctx = PerceptionContext(
+        scene_hint=body.get("scene_hint", ""),
+        sensors=sensors,
+        recent_actions=recent,
+        habit=body.get("habit") or {},
+        presence_minutes=float(body.get("presence_minutes", presence.minutes)),
+        idle_minutes=float(body.get("idle_minutes", presence.idle_minutes())),
+        lying_minutes=float(body.get("lying_minutes", 0.0)),
+        vestibular=body.get("vestibular") or {},
+        face_frame=object() if body.get("face_frame") else None,
+    )
+    result = perception_service.perceive(ctx)
+    return {"ok": True, **result.to_dict()}
 
 
 # ---------- MCP 协议接入 ----------

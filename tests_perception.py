@@ -431,6 +431,51 @@ check("不在位期间不累计", abs(tracker.minutes - 10.0) < 0.01, str(tracke
 tracker.reset()
 check("reset 后归零", tracker.minutes == 0.0 and tracker._last_ts is None)
 
+# ---------------------------------------------------------------- 10. 算力后端
+print("\n== 10. 算力后端探测（移植自心镜，按实际结构而非宣传口径）==")
+
+from backend.perception import gpu as gpu_mod
+
+gpu_mod.reset()
+info = gpu_mod.detect_accelerator()
+check("探测结果含必要字段",
+      all(k in info for k in ("available", "backend", "device", "vendor", "model")),
+      str(list(info.keys())))
+check("backend 只能是 torch 或 numpy", info["backend"] in ("torch", "numpy"), info["backend"])
+check("厂商识别标注为启发式", info["vendor_detection"] in ("n/a", "device-name substring heuristic"),
+      info["vendor_detection"])
+
+xp = gpu_mod.get_array_module()
+check("get_array_module 返回可用模块", xp is not None)
+check("返回的模块具备本项目用到的算子",
+      all(hasattr(xp, op) for op in ("abs", "diff", "mean", "std")),
+      "缺少基础算子")
+
+# 无加速器时必须原样返回，不抛异常
+arr = [1.0, 2.0, 3.0]
+check("无加速器时 to_device 原样返回", gpu_mod.to_device(arr) is arr)
+check("to_cpu(None) 返回 None", gpu_mod.to_cpu(None) is None)
+
+# 强制 numpy 后端
+os.environ["LINGXI_GPU_BACKEND"] = "numpy"
+gpu_mod.reset()
+check("强制 numpy 时 backend=numpy", gpu_mod.detect_accelerator()["backend"] == "numpy")
+check("强制 numpy 时返回 numpy 模块",
+      gpu_mod.get_array_module().__name__ == "numpy")
+del os.environ["LINGXI_GPU_BACKEND"]
+gpu_mod.reset()
+
+# benchmark 上下文管理器在未开启时不应有副作用
+before = len(gpu_mod.benchmark_records())
+with gpu_mod.benchmark("test"):
+    _ = 1 + 1
+check("未开启基准时 benchmark 不记录", len(gpu_mod.benchmark_records()) == before)
+
+# status 必须如实暴露"当前没有热路径"
+st = gpu_mod.status()
+check("status 暴露 has_hot_path=False", st["has_hot_path"] is False)
+check("status 明确警告不得据此主张成果", "不得" in st["note"], st["note"])
+
 # ---------------------------------------------------------------- 汇总
 print()
 print("=" * 60)
