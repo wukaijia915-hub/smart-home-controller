@@ -8,11 +8,16 @@
 """
 from __future__ import annotations
 
+import time
+
 from .agents import RootAgent, ManagerAgent
 from .devices.registry import DeviceRegistry
 from .edge_cloud import DecisionRouter
 from .knowledge.rag import kb
 from .llm_client import LLMClient
+from .memory.experience import derive_rating, experience
+from .memory.habits import habits
+from .observability.llm_log import llm_log
 from .skills import skill_manager
 from .state import StateStore
 
@@ -37,6 +42,7 @@ class HomeAgent:
         self.sensors: dict = {}         # 当前传感器数据（main.py 注入）
 
     def decide(self, text: str) -> dict:
+        t_start = time.perf_counter()
         # 每次决策重置慢环预算（次数/墙钟），避免跨请求累积
         self.root.budget.begin()
 
@@ -44,8 +50,14 @@ class HomeAgent:
         route = self.router.route(text, self.sensors)
         cloud_text = self.router.guard.sanitize(text) if route.need_sanitize else None
 
+        t_plan = time.perf_counter()
         plan = self.root.plan(text, self.sensors, self.session,
                               allow_cloud=route.cloud_allowed, cloud_text=cloud_text)
+        rule_ms = (time.perf_counter() - t_plan) * 1000.0
+
+        # 显式偏好登记：用户说「我喜欢 26 度」这类话时记下来，用于后续
+        # 「声明 vs 实际行为」的一致性校验（见 memory/habits.py）。抽不到就什么都不做。
+        habits.record_declared(text)
 
         # 上云审计：仅当实际调用云侧大模型（plan.source == "llm"）时记录数据最小化
         if plan.source == "llm":
@@ -55,6 +67,7 @@ class HomeAgent:
         if not plan.is_command or not plan.sub_tasks:
             self._remember(text, plan.reply)
             trace = [{"step": "propose", "detail": "无操作意图，未执行任何设备", "ok": True}]
+            self._record_metrics(plan, trace, rule_ms, t_start)
             return {
                 "reply": plan.reply,
                 "actions": [],
@@ -81,6 +94,12 @@ class HomeAgent:
         self._remember(text, report.reply)
 
         trace = [t.to_dict() for t in report.trace]
+        # 注入了哪些记忆：单独一条 trace，让"经验复用"在界面上是可复核的事实
+        if plan.context_used:
+            trace.insert(0, {"step": "recall",
+                             "detail": self._describe_context(plan.context_used), "ok": True})
+        self._record_experience(plan, report, text)
+        self._record_metrics(plan, trace, rule_ms, t_start)
         return {
             "reply": report.reply,
             "actions": report.actions,
@@ -93,6 +112,69 @@ class HomeAgent:
             "pending_action": report.pending_action,
             "llm_budget": self._budget_view(trace),
         }
+
+    # ---------- 闭环的另一半：把执行结果写回经验库 ----------
+    def _record_experience(self, plan, report, text: str) -> None:
+        """只记录**走慢环**的规划。
+
+        规则命中的路径是确定的（同样的输入永远命中同样的规则），把它也写进经验库
+        只会让库被"开灯/关灯"这类案例淹没，且它下回还会走规则、根本用不上经验。
+        经验复用的价值恰恰在规则覆盖不到的那部分。
+        """
+        if plan.source != "llm":
+            return
+        total = len(report.results)
+        if total == 0:
+            return
+        ok_count = sum(1 for r in report.results if r.get("ok"))
+        rating = derive_rating(ok_count, total)
+        experience.record(
+            category="fuzzy_command",
+            context_key=self._context_key(report.actions or plan.sub_tasks),
+            request=text,
+            actions=report.actions or [{"device_id": s.device_id, "command": s.command}
+                                       for s in plan.sub_tasks],
+            reply=report.reply,
+            rating=rating,
+            rating_source="auto_execution",
+            source=plan.source,
+        )
+
+    def _context_key(self, actions) -> str:
+        """把动作归成一个粗粒度上下文键，如「客厅|ac」。检索时按关键词重合度匹配。"""
+        rooms, cats = [], []
+        for a in actions or []:
+            did = a.get("device_id", "") if isinstance(a, dict) else ""
+            d = self.registry.get(did)
+            if d is None:
+                continue
+            if d.room and d.room not in rooms:
+                rooms.append(d.room)
+            if d.category and d.category not in cats:
+                cats.append(d.category)
+        return "|".join(rooms + cats)
+
+    @staticmethod
+    def _describe_context(context_used: list) -> str:
+        parts = []
+        for c in context_used:
+            if c.get("kind") == "manual":
+                names = "、".join(n for n in c.get("names", []) if n)
+                if names:
+                    parts.append(f"手册：{names}")
+            elif c.get("kind") == "experience":
+                parts.append(f"经验#{c.get('id')}（{c.get('context_key', '')} "
+                             f"{c.get('rating')}/5）")
+        return "召回 " + "；".join(parts) if parts else ""
+
+    # ---------- 观测：分层延迟 ----------
+    def _record_metrics(self, plan, trace: list, rule_ms: float, t_start: float) -> None:
+        total_ms = (time.perf_counter() - t_start) * 1000.0
+        snap = self.root.budget.snapshot()
+        llm_log.record_decision(
+            source=plan.source, rule_ms=rule_ms, total_ms=total_ms,
+            actions=len(plan.sub_tasks or []),
+            degraded=bool(snap.get("degraded")), degrade_reason=snap.get("reason", ""))
 
     def _budget_view(self, trace: list) -> dict:
         """把本次决策的模型预算用量并入返回体。

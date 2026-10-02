@@ -28,6 +28,7 @@ from typing import Optional
 
 from ..devices.registry import DeviceRegistry
 from ..knowledge.rag import kb
+from ..memory.experience import experience
 from ..scenes import SCENES
 from ..state import StateStore
 from .llm_budget import LLMBudget
@@ -379,9 +380,28 @@ class RootAgent:
         rag_context = kb.get_context(text)
         rag_section = f"\n\n{rag_context}" if rag_context else ""
 
+        # 经验复用：把同类请求**此前执行成功**的规划注入 prompt。
+        # 这是「成功案例回灌」闭环的注入点，闭环的另一半在 agent.decide()
+        # （执行完把结果与评分写回 experience.jsonl）。
+        # 检索是确定性排序（rating*2 + 关键词重合度），同样输入永远注入同样的案例，
+        # 因此"注入 vs 不注入"的差异可被真的测出来 —— 见 memory/experience.py 模块头。
+        exp_context = experience.build_context(prefer_category="fuzzy_command", query=text)
+        exp_section = f"\n\n{exp_context}" if exp_context else ""
+
+        # 记下这一轮到底注入了什么，供 decision_trace 展示（可复核，不是声称）
+        context_used = []
+        if rag_context:
+            context_used.append({"kind": "manual",
+                                 "names": [m.get("name", "") for m in kb.search_manuals(text, top_k=2)]})
+        context_used += [
+            {"kind": "experience", "id": c["id"], "context_key": c.get("context_key"),
+             "rating": c.get("rating"), "rating_source": c.get("rating_source")}
+            for c in experience.last_injected
+        ]
+
         user = (
             f"当前环境传感器：{sensor_text}\n"
-            f"{rag_section}\n\n"
+            f"{rag_section}{exp_section}\n\n"
             f"用户指令：{text}\n\n"
             f"请判断该指令是否为设备控制/场景联动意图，并给出具体的设备动作。"
         )
@@ -400,7 +420,8 @@ class RootAgent:
         reply = result.get("reply") or result.get("text") or "已为您处理。"
         if not is_command:
             return TaskPlan(is_command=False, source="llm", reply=reply,
-                            sub_tasks=[], state_version=self.store.version)
+                            sub_tasks=[], state_version=self.store.version,
+                            context_used=context_used)
 
         raw_actions = result.get("actions")
         if not isinstance(raw_actions, list):
@@ -426,9 +447,11 @@ class RootAgent:
 
         if not sub_tasks:
             return TaskPlan(is_command=False, source="llm", reply=reply,
-                            sub_tasks=[], state_version=self.store.version)
+                            sub_tasks=[], state_version=self.store.version,
+                            context_used=context_used)
         return TaskPlan(is_command=True, source="llm", reply=reply,
-                        sub_tasks=sub_tasks, state_version=self.store.version)
+                        sub_tasks=sub_tasks, state_version=self.store.version,
+                        context_used=context_used)
 
     # ---------- 慢环：意图理解 + 具体动作提议 ----------
     def _describe_devices(self) -> str:

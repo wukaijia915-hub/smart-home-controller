@@ -25,11 +25,16 @@ class TraceStep:
 
 
 class StateStore:
-    def __init__(self, max_log: int = 500):
+    def __init__(self, max_log: int = 2000):
         self.version = 0
         self.audit_log: list[dict] = []
         self.pending: dict[str, dict] = {}   # pending_id -> {lease, action, text}
-        self._max_log = max_log
+        self.max_log = max_log
+
+    @property
+    def _max_log(self) -> int:
+        """兼容旧引用。新代码用 `max_log`。"""
+        return self.max_log
 
     # ---------- 版本 ----------
     def bump(self) -> int:
@@ -50,12 +55,21 @@ class StateStore:
             "ts": time.time(),
         }
         self.audit_log.append(entry)
-        if len(self.audit_log) > self._max_log:
-            self.audit_log = self.audit_log[-self._max_log:]
+        if len(self.audit_log) > self.max_log:
+            self.audit_log = self.audit_log[-self.max_log:]
         return entry
 
     def get_audit(self, limit: int = 50) -> list[dict]:
         return self.audit_log[-limit:]
+
+    def audit_since(self, ts: float, limit: int = 10000) -> list[dict]:
+        """取某时刻之后的审计记录，供日报/统计使用。
+
+        调用方必须意识到**这是环形缓冲**：`audit_log` 只保留最近 `max_log` 条，
+        超出的旧记录已被丢弃。「今天执行了 N 次」在 N 接近缓冲上限时是**下界**
+        而不是总数，日报里必须如实标注（见 `jobs/daily_summary.collect_facts`）。
+        """
+        return [e for e in self.audit_log[-limit:] if float(e.get("ts", 0)) >= ts]
 
     # ---------- 待确认 ----------
     def add_pending(self, lease, action: dict, text: str) -> str:

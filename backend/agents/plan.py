@@ -36,4 +36,8 @@ class TaskPlan:
     reply: str
     sub_tasks: list = field(default_factory=list)
     state_version: int = 0
-    source: str = "rule"                 # rule | llm | tool | fallback
+    source: str = "rule"
+    # 本次规划实际注入了哪些记忆（经验案例 id / 手册名）。空表示没用上任何记忆。
+    # 存在的意义是**让"经验复用"可被复核**：答辩时能指出这一轮到底参考了哪几条
+    # 历史案例，而不是只能声称"系统会学习"。
+    context_used: list = field(default_factory=list)                 # rule | llm | tool | fallback
