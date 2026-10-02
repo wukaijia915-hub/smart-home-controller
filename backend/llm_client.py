@@ -123,13 +123,15 @@ class LLMBackend:
         return True
 
     def chat_json(self, messages: list[dict], temperature: float = 0.2,
-                  max_tokens: int = 500) -> Optional[dict]:
+                  max_tokens: int = 500, timeout: Optional[float] = None) -> Optional[dict]:
         """返回解析后的 JSON **对象**；任何异常情况一律返回 None。
 
         契约保证：返回值要么是 dict，要么是 None。
         （旧实现 `return json.loads(content)` 会把模型输出的 JSON 数组原样返回，
          调用方 manager_agent._llm_translate 对其调用 .get() 直接 AttributeError。
           即使请求了 response_format=json_object，模型也不保证遵守。）
+
+        timeout 可覆盖 `LLM_TIMEOUT` 环境变量（默认 8s，实测被设为 30s，形同虚设）。
         """
         if not self.is_ready():
             return None
@@ -147,7 +149,7 @@ class LLMBackend:
         }
         try:
             resp = requests.post(url, headers=headers, json=payload,
-                                 timeout=self.timeout, proxies=resolve_proxies())
+                                 timeout=timeout or self.timeout, proxies=resolve_proxies())
             if resp.status_code != 200:
                 self._record_failure()
                 self._warn_once(f"HTTP {resp.status_code}: {resp.text[:200]}")
@@ -239,15 +241,16 @@ class LLMClient:
         return ready
 
     def chat_json(self, messages: list[dict], temperature: float = 0.2,
-                  max_tokens: int = 500, context_text: str = "") -> Optional[dict]:
-        """调用 LLM，自动故障转移。context_text 用于复杂度路由。"""
+                  max_tokens: int = 500, context_text: str = "",
+                  timeout: Optional[float] = None) -> Optional[dict]:
+        """调用 LLM，自动故障转移。context_text 用于复杂度路由，timeout 可覆盖默认超时。"""
         if not self.available:
             return None
         candidates = self._select_backends(context_text)
         if not candidates:
             return None
         for backend in candidates:
-            result = backend.chat_json(messages, temperature, max_tokens)
+            result = backend.chat_json(messages, temperature, max_tokens, timeout=timeout)
             if result is not None:
                 self.last_used_backend = backend.name
                 return result

@@ -131,12 +131,14 @@ cd smart-home-controller
 # 快速回归（改小东西时）
 LLM_OFFLINE=1 python tests_smoke.py
 
-# 全量门禁（每个阶段收尾必须六脚本全绿）
+# 全量门禁（每个阶段收尾必须 8 脚本全绿）
 LLM_OFFLINE=1 python tests_smoke.py \
   && LLM_OFFLINE=1 python tests_agents.py \
   && LLM_OFFLINE=1 python tests_capabilities.py \
   && LLM_OFFLINE=1 python tests_edge_cloud.py \
   && LLM_OFFLINE=1 python tests_error.py \
+  && LLM_OFFLINE=1 python tests_funnel.py \
+  && LLM_OFFLINE=1 python tests_budget.py \
   && LLM_OFFLINE=1 python tests_performance.py
 ```
 
@@ -195,8 +197,9 @@ curl -X POST localhost:8000/api/tools/call -H "Content-Type: application/json" \
 - ✅ 阶段 0　修地基（commit `6b37794`）
 - ✅ 阶段 1a 五级漏斗接线（技能 + 能力契约接入主链路、条件句保护）
 - ✅ 阶段 1b **Design B：LLM 单次提议 + Manager 纯护栏**（含四项实测实验）
-- ⏳ 阶段 2　租约包络与 `verify` 全路径
-- ⏳ 阶段 3　感知层（多模态置信度融合 / 白盒情境参数 / 国产算力链）
+- ✅ `llm_budget.py` 慢环预算（次数/墙钟/单次超时 + 降级可见）
+- ⏳ 阶段 3　**感知层**（多模态置信度融合 / 白盒情境参数 / 国产算力链）
+- ⏳ 阶段 2　租约包络与 `verify` 全路径（与阶段 3 改动文件不重叠，可穿插做）
 - ⏳ 阶段 4　记忆三源与快慢双环
 - ⏳ 阶段 5　文档与竞赛资产
 
@@ -231,10 +234,13 @@ curl -X POST localhost:8000/api/tools/call -H "Content-Type: application/json" \
   实测 trace 已生效。**但总耗时未改善，瓶颈在模型生成速度**，见上方硬指标说明
 
 阶段 1b 已修复（Design B：LLM 单次提议 + Manager 纯护栏）：
-- ~~D19~~ `LLM_TIMEOUT=30` 超时保护形同虚设 → 仍在 `.env`，但**已加 `llm_budget` 之前在
-  代码层留痕**；建议一并下调到 10s（属红线操作，见 D9）
+- ~~D19~~ `LLM_TIMEOUT=30` 超时保护形同虚设　**已在代码层兜住**
+  `agents/llm_budget.py` 用 `per_call_timeout`（默认 15s，可被 `LLM_CALL_TIMEOUT`
+  覆盖）压过后端默认值，并给一次 decide() 加上调用次数与墙钟双重上限。
+  `.env` 那个 30s 建议顺手改掉，但**不再是安全缺口**
 - ~~D20~~ Manager 把 17 台设备全量塞进 prompt　**已消除**（Manager 不再持有 LLM，
-  其 prompt 整个删除；Root 的 prompt 保留了完整设备清单，因为实测 prompt 体积不影响延迟）
+  其 prompt 整个删除）。注意：Root 的 prompt **保留**完整设备清单是正确的 ——
+  实测 prompt 体积不影响延迟（`experiments/README.md` 实验五），删它没有收益
 - ~~D21~~ **模型端点继承 Windows 系统代理导致 LLM 层无声消失**　**已修**
   （`resolve_proxies()` 默认直连 + 三处静默降级告警）
 - ~~（架构）~~ Root 输出高层目标、Manager 二次翻译（LLM 调用数 `1+N`）→ 改为

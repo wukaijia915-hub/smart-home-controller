@@ -30,6 +30,7 @@ from ..devices.registry import DeviceRegistry
 from ..knowledge.rag import kb
 from ..scenes import SCENES
 from ..state import StateStore
+from .llm_budget import LLMBudget
 from .plan import SubTask, TaskPlan  # noqa: F401  （SubTask/TaskPlan 对外仍从本模块可导入）
 
 
@@ -65,8 +66,11 @@ class RootAgent:
         self.registry = registry
         self.store = store
         self.llm = llm
-        self.capabilities = capabilities   # CapabilityRegistry（漏斗⑤）
-        self.skills = skills               # SkillManager（漏斗④）
+        self.capabilities = capabilities   # CapabilityRegistry（漏斗④）
+        self.skills = skills               # SkillManager（漏斗③）
+        # 慢环预算：给模型调用设次数/墙钟/单次超时上界。见 llm_budget.py 的说明 ——
+        # 它不是延迟优化手段（已证伪），而是防止一次卡住的请求长时间占住线程。
+        self.budget = LLMBudget()
 
     # ---------- Ground：拉取状态真相 ----------
     def ground(self, sensors: Optional[dict] = None) -> dict:
@@ -385,7 +389,9 @@ class RootAgent:
         for m in (history or [])[-6:]:
             messages.insert(-1, m)
 
-        result = self.llm.chat_json(messages, max_tokens=700, context_text=text)
+        # 经预算调用：超时由 per_call_timeout 覆盖后端的 LLM_TIMEOUT（实测为 30s），
+        # 失败/超限一律返回 None，由下方走降级路径，并在 budget 里留下 degraded 标记
+        result = self.budget.call(self.llm, messages, max_tokens=700, context_text=text)
         # LLM 返回的 JSON 属不可信输入：必须是对象，字段类型逐一防御
         if not isinstance(result, dict):
             return None
