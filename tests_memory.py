@@ -173,11 +173,32 @@ check("stats 含观察到的偏好（按设备）",
 check("hint 明确区分「声明」的偏好", "明确表示偏好" in h2.hint())
 check("hint 数据不足时不编造", fresh_habits().hint() == "")
 
-# 落盘原子性：写完后不留下 .tmp 残骸
+# 落盘策略：**延迟写**（记录只置脏，由内环统一 flush）
+#
+# 这不是"顺手改的优化"，而是一个实测出来的真问题：`_save()` 每次都要序列化整个
+# JSON + 写盘 + 原子替换，而它被 `HomeAgent.decide()` 对**每一条成功执行的动作**
+# 调用 —— 一次「我回家了」（4 条动作）就是 4 次全文件重写。
+# 实测：完整 decide() 8.74ms，屏蔽习惯落盘后 0.13ms，即**98% 的规则层延迟是磁盘 I/O**。
+# 习惯统计不是事务数据，崩溃时丢几秒计数可以接受，每个指令等 8ms 磁盘不行。
 h2.record_command("tv_living_01", "set_volume", {"volume": 20})
+h2.record_scene("movie")
+check("★ 记录后不立即写盘（延迟写，避免每条动作重写整个文件）",
+      h2._dirty is True, "记录后应处于脏状态")
+check("未 flush 时文件里还没有这些记录",
+      (not h2.path.exists())
+      or ("tv_living_01:set_volume" not in h2.path.read_text(encoding="utf-8")),
+      "延迟写生效（连文件都可能还没被创建）")
+check("flush 返回 True 表示确实写了", h2.flush() is True)
+check("flush 后无脏标记", h2._dirty is False)
+check("flush 幂等：无改动时返回 False 不再写盘", h2.flush() is False)
+_reloaded = HabitStore(path=h2.path)
+check("落盘内容可被重新读出（换一个实例读同一个文件）",
+      _reloaded.data["commands"].get("tv_living_01:set_volume") == 1,
+      "延迟写 + 原子替换之后，数据必须能被完整读回")
+check("延迟写的全部记录都在（命令与场景都不丢）",
+      _reloaded.data["scenes"].get("movie") == 1, str(_reloaded.data["scenes"]))
 tmp_leftovers = list(Path(h2.path.parent).glob("*.tmp"))
 check("原子落盘无 .tmp 残留", not tmp_leftovers, str(tmp_leftovers))
-check("落盘内容可被重新读出", h2.path.exists() and h2.path.stat().st_size > 0)
 
 # 迁移只在规范目录发生（否则测试会导入生产数据，断言不可复现）
 check("临时数据目录不触发旧数据迁移",

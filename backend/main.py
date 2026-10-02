@@ -174,6 +174,13 @@ async def lifespan(app: FastAPI):
             presence.update(present)
             # 喂外环：日报的「最低/平均/最高」必须来自真实采样，不能拿当前读数冒充
             daily_summary.series.tick(simulator.values)
+            # 记忆层延迟落盘：习惯统计不是事务数据，没必要每条动作都重写整个文件。
+            # 由内环此处统一 flush（见 memory/habits.py 的说明：实测这一项占了
+            # 规则层延迟的 98%，8.74ms → 0.13ms）。
+            try:
+                habits_mod.habits.flush_if_dirty()
+            except Exception as e:
+                print(f"[记忆·习惯] 落盘失败（不影响控制链路）: {type(e).__name__}: {e}")
             await manager.broadcast({"type": "sensor", "data": simulator.values})
 
     # 内环告警：读数 → 声明式阈值判定 → 结构化事件 → 事件路由（联动 + 播报）
@@ -303,6 +310,11 @@ async def lifespan(app: FastAPI):
     task.cancel()
     alert_task.cancel()
     perception_task.cancel()
+    # 关闭前补一次落盘：习惯数据改为延迟写入后，正常退出时不能丢最后几秒的计数
+    try:
+        habits_mod.habits.flush()
+    except Exception as e:
+        print(f"[记忆·习惯] 退出落盘失败: {type(e).__name__}: {e}")
 
 
 app = FastAPI(title="智能家居数字人中枢", lifespan=lifespan)

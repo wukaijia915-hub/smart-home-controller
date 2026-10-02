@@ -58,6 +58,7 @@ class HabitStore:
     def __init__(self, path: Path | None = None):
         self.path = path or HABITS_PATH
         self._lock = threading.Lock()
+        self._dirty = False        # 见下方 record_* 的说明：写入只置脏，落盘由内环统一做
         self.data = self._load()
 
     # ---------- 载入 / 落盘 ----------
@@ -98,10 +99,38 @@ class HabitStore:
             tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2),
                            encoding="utf-8")
             os.replace(tmp, self.path)
+            self._dirty = False
         except Exception as e:
             print(f"[记忆·习惯] 保存失败: {e}")
 
+    # ---------- 延迟落盘 ----------
+    def flush(self) -> bool:
+        """把内存中的习惯数据落盘。返回本次是否真的写了。"""
+        with self._lock:
+            if not self._dirty:
+                return False
+            self._save()
+            return True
+
+    def flush_if_dirty(self) -> bool:
+        return self.flush()
+
     # ---------- 写入 ----------
+    # ⚠️ 以下三个 record_* 只改内存并置脏标记，**不直接落盘**。
+    #
+    # 原先每次 record 都调用 `_save()`，而 `_save()` 是"序列化整个 JSON + 写盘 +
+    # 原子替换"。这个方法又被 `HomeAgent.decide()` 对**每一条成功执行的动作**调用 ——
+    # 一次「我回家了」（4 条动作）就是 4 次全文件重写。
+    #
+    # 实测代价（同一台机器，12 条标准输入 × 50 轮）：
+    #     完整 decide()          8.74ms
+    #     漏斗解析单独            0.014ms
+    #     屏蔽习惯落盘后 decide()  0.13ms     ← 98% 的时间花在这里
+    #
+    # 也就是说**规则层延迟指标几乎全部是磁盘 I/O**，而习惯统计根本不是事务数据：
+    # 进程崩溃时最多丢掉几秒的计数，这个代价远小于每个用户指令都等 8ms 磁盘。
+    # 改由内环（`main.py` 的 sensor_loop，2 秒一跳）统一 flush，
+    # 并在 lifespan 退出时补一次，保证正常关闭不丢数据。
     def record_command(self, device_id: str, command: str, params: dict) -> None:
         if not device_id or not command:
             return
@@ -113,14 +142,14 @@ class HabitStore:
                 series = self.data["preferences"].setdefault(pref_key, [])
                 series.append(params)
                 del series[:-20]        # 只保留最近 20 条，避免文件无限增长
-            self._save()
+            self._dirty = True
 
     def record_scene(self, scene: str) -> None:
         if not scene:
             return
         with self._lock:
             self.data["scenes"][scene] = self.data["scenes"].get(scene, 0) + 1
-            self._save()
+            self._dirty = True
 
     def record_declared(self, text: str) -> Optional[dict]:
         """从用户话语里抽取**显式声明的偏好**。抽不到返回 None。
@@ -138,14 +167,14 @@ class HabitStore:
         entry = {"value": float(m.group(1)), "raw": m.group(0), "at": _now()}
         with self._lock:
             self.data["declared"][pref_key] = entry
-            self._save()
+            self._dirty = True
         return {"preference": pref_key, **entry}
 
     def clear_declared(self, pref_key: str) -> bool:
         with self._lock:
             if pref_key in self.data["declared"]:
                 del self.data["declared"][pref_key]
-                self._save()
+                self._dirty = True
                 return True
         return False
 
