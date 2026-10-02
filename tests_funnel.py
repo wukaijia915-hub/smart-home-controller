@@ -290,6 +290,60 @@ check("模型提议高危动作 → 挂起待确认",
       res3.get("requires_confirmation") is True and bool(res3.get("pending_id")),
       f"requires_confirmation={res3.get('requires_confirmation')}")
 
+# ---------------------------------------------------------------- 7. 工具层护栏
+print("\n== 7. 工具层不得绕过护栏（/api/tools/call 与 MCP tools/call）==")
+
+from backend.toolkit import tool_registry as _tr
+from backend.toolkit.guard import ManagerGuard
+
+_tool_reg = DeviceRegistry()
+_tool_caps = CapabilityRegistry()
+_tool_caps.auto_pair(_tool_reg.all())
+_tool_agent = HomeAgent(_tool_reg, capabilities=_tool_caps)
+_tr.build_from_devices(_tool_reg)
+
+# 未装配护栏时必须 fail closed（曾经的真实漏洞：直连 control 可解锁门锁）
+_r = _tr.call("lock_entry_01__unlock", {})
+check("未装配护栏 → 拒绝执行设备动作",
+      _r.get("ok") is False and "护栏" in str(_r.get("error", "")),
+      str(_r.get("error"))[:70])
+check("未装配护栏时设备状态未被改变",
+      _tool_reg.get("lock_entry_01").get("locked") is True)
+
+# 装配护栏后：高危必须挂起且不执行
+_tr.bind_actuation_guard(ManagerGuard(_tool_agent.manager))
+
+_r = _tr.call("lock_entry_01__unlock", {})
+check("工具直调 unlock → 挂起待确认（不执行）",
+      _r.get("ok") is False and _r.get("requires_confirmation") is True
+      and bool(_r.get("pending_id")),
+      str({k: _r.get(k) for k in ("ok", "requires_confirmation", "pending_id")}))
+check("挂起期间门锁仍为锁定", _tool_reg.get("lock_entry_01").get("locked") is True)
+
+_r = _tr.call("gas_stove_kitchen_01__turn_on", {})
+check("工具直调燃气灶点火 → 挂起待确认（不执行）",
+      _r.get("ok") is False and _r.get("requires_confirmation") is True)
+check("挂起期间燃气灶未点火", _tool_reg.get("gas_stove_kitchen_01").get("on") is False)
+
+# 普通动作正常执行，且带回读证据
+_r = _tr.call("light_living_01__set_brightness", {"brightness": 45})
+check("工具直调普通动作 → 正常执行且回读 confirmed",
+      _r.get("ok") is True and _r.get("result", {}).get("status") == "confirmed",
+      str(_r.get("result", {}).get("status")))
+check("设备状态确实被改变",
+      _tool_reg.get("light_living_01").get("brightness") == 45)
+
+# 参数校验仍然生效
+_r = _tr.call("ac_living_01__set_temperature", {"temperature": 99})
+check("工具直调参数越界 → 被拒", _r.get("ok") is False, str(_r.get("error"))[:60])
+
+# 确认后应能真正执行（证明挂起不是死路）
+_pid = _tr.call("lock_entry_01__unlock", {}).get("pending_id")
+_conf = _tool_agent.confirm(_pid)
+check("确认后高危动作可执行（挂起不是死路）",
+      _conf.get("ok") is True and _tool_reg.get("lock_entry_01").get("locked") is False,
+      str(_conf.get("error", _conf.get("status"))))
+
 # ---------------------------------------------------------------- 汇总
 print()
 print("=" * 60)

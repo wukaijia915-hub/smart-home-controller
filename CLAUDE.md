@@ -240,6 +240,14 @@ curl -X POST localhost:8000/api/tools/call -H "Content-Type: application/json" \
 - ~~（架构）~~ Root 输出高层目标、Manager 二次翻译（LLM 调用数 `1+N`）→ 改为
   **Root 单次输出具体动作、Manager 零 LLM**（`1` 次）。实测幻觉率 0%（0/25），
   依据见 `experiments/README.md`
+- ~~D22~~ **工具层完全绕过护栏（高危漏洞）**　**已修**
+  `/api/tools/call` 与 MCP `tools/call` 此前直接调 `registry.control()`，
+  无租约、无版本校验、无高危确认。实测可直接 `lock_entry_01__unlock`（门锁被解锁）
+  与 `gas_stove_kitchen_01__turn_on`（燃气灶被点燃），与"授权租约是防越权的核心护栏"
+  的宣称直接矛盾。
+  修法不是另写一套校验，而是 **`ManagerGuard` 把工具调用包成单动作 `TaskPlan`
+  交给同一个 ManagerAgent** —— 对话路径与工具路径共用同一条链，无双份语义。
+  且护栏**未装配时拒绝执行**（fail closed），避免漏洞以后悄悄回来
 
 **决策变更说明**：原方案的阶段 1b 是「Root 慢环改 prompt-based ReAct 工具循环」。
 经实验否决（`experiments/README.md` 实验一：格式遵循度 80%，且延迟无优势），

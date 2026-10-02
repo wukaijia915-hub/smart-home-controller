@@ -31,6 +31,7 @@ from ..devices.registry import DeviceRegistry
 from ..knowledge.rag import kb
 from ..scenes import SCENES
 from ..state import StateStore
+from .plan import SubTask, TaskPlan  # noqa: F401  （SubTask/TaskPlan 对外仍从本模块可导入）
 
 
 def _room_of(text: str) -> str:
@@ -57,30 +58,6 @@ def _curtain_id(room: str) -> str:
 
 def _ac_id(room: str) -> str:
     return f"ac_{'bedroom' if room == '卧室' else 'living'}_01"
-
-
-@dataclass
-class SubTask:
-    """一个子任务。
-
-    source="rule" 时 device_id/command/params 已由规则填好；
-    source="llm"  时只有 goal（高层意图），由 Manager 翻译成具体动作。
-    """
-    source: str = "rule"                 # rule | llm
-    device_id: str = ""
-    command: str = ""
-    params: dict = field(default_factory=dict)
-    category: str = ""                   # 设备类别（风险判定用）
-    goal: str = ""                       # llm 路径：高层意图描述
-
-
-@dataclass
-class TaskPlan:
-    is_command: bool
-    reply: str
-    sub_tasks: list = field(default_factory=list)
-    state_version: int = 0
-    source: str = "rule"                 # rule | llm | fallback
 
 
 class RootAgent:

@@ -66,9 +66,14 @@ _twin_paired = capability_registry.auto_pair(registry.all())
 agent = HomeAgent(registry, capabilities=capability_registry)
 simulator = SensorSimulator(registry)
 
-# 初始化标准化工具注册表
+# 初始化标准化工具注册表，并装配执行护栏。
+# 工具路径（/api/tools/call、MCP tools/call）与对话路径共用 Manager 的同一条护栏链
+# （参数校验 → 租约签发 → 版本校验 → 高危挂起 → 回读确认 → 写审计），
+# 不装配护栏则设备类工具一律拒绝执行（fail closed）。
 from .tools import tool_registry
+from .toolkit.guard import ManagerGuard
 tool_registry.build_from_devices(registry)
+tool_registry.bind_actuation_guard(ManagerGuard(agent.manager))
 
 # state_store 必须注入：否则事件路径改状态不递增版本号，租约版本会与真相源脱节
 event_router = EventRouter(registry, manager, state_store=agent.store)

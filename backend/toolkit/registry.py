@@ -35,7 +35,11 @@ class ToolRegistry:
         logger.info(f"工具注册表已构建：{len(self._tools)} 个工具 / {len(registry.all())} 台设备")
 
     def bind_actuation_guard(self, guard) -> None:
-        """★阶段 1：注入执行护栏。注入后所有工具调用经护栏而非直连设备。"""
+        """装配执行护栏。**不装配则设备类工具一律拒绝执行**（fail closed）。
+
+        main.py 在启动时注入 `ManagerGuard(agent.manager)`，使工具路径与
+        对话路径共用同一条护栏链。见 backend/toolkit/guard.py。
+        """
         self._actuation_guard = guard
 
     # ---------- 注册与查询 ----------
@@ -110,15 +114,20 @@ class ToolRegistry:
         return {"ok": True, "result": result, "tool": name}
 
     def _execute(self, tool: Tool, params: dict) -> dict:
-        """统一执行入口 —— 所有工具调用都从这里出去。"""
+        """统一执行入口 —— 所有工具调用都从这里出去。
+
+        设备类工具**必须有护栏**。没有护栏时直接拒绝，而不是退回直连
+        `registry.control()` —— 后者会静默绕过租约、版本校验与高危确认
+        （实测可解锁门锁、点燃燃气灶）。宁可失败关闭，也不要悄悄留个洞。
+        """
         if tool.handler is not None:
             return tool.handler(params)
-        if self._actuation_guard is not None:
-            return self._actuation_guard.actuate(
-                tool.device_id, tool.command, params, tool=tool.name)
-        if self._registry is None:
-            return {"ok": False, "error": "工具注册表未绑定设备注册表，请先调用 build_from_devices()"}
-        return self._registry.control(tool.device_id, tool.command, params)
+        if self._actuation_guard is None:
+            return {"ok": False,
+                    "error": "工具执行护栏未装配，拒绝执行设备动作。"
+                             "请先调用 bind_actuation_guard()（见 backend/toolkit/guard.py）"}
+        return self._actuation_guard.actuate(
+            tool.device_id, tool.command, params, tool=tool.name)
 
     def _log(self, name: str, params: dict, result, error: Optional[str]) -> None:
         self._call_log.append({
