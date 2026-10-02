@@ -39,11 +39,11 @@ class ManagerAgent:
         trace = [TraceStep("ground", f"状态版本 v{task_plan.state_version}，{len(task_plan.sub_tasks)} 个子任务")]
         executed, results = [], []
 
-        # ★ 先批量翻译全部子任务，再逐条执行。
-        #   原实现是「翻译一个→执行一个」，每个 LLM 来源的子任务各调一次模型，
-        #   一次 decide() 的 LLM 调用数达 1+N（Root 1 次 + Manager N 次）。
-        #   实测 glm-4-flash 单次 2-3s，3 个子任务就是 13-16s，远超 5s 目标。
-        #   合并为一次批量调用后降到 1+1=2 次。
+        # 注意：曾尝试把 N 个子任务的翻译合并为一次批量 LLM 调用（1+N → 1+1），
+        # 但实测 glm-4-flash **无法可靠产出「多项、每项含嵌套数组」的响应**
+        # （8 次探测全部畸形：3 项以上返回单元素数组，2 项也混入多余顶层键）。
+        # 批量失败后回退到逐个翻译，调用数反而更多、延迟更差，故已回退。
+        # 结论见 CLAUDE.md「关于慢环延迟」。
         plans = self._translate_all(task_plan.sub_tasks, history, trace)
 
         for sub_task, actions in plans:
@@ -112,14 +112,9 @@ class ManagerAgent:
 
         if pending:
             goals = [sub_tasks[i].goal for i in pending]
-            trace.append(TraceStep("propose", f"LLM 批量翻译 {len(goals)} 个目标（一次调用）"))
-            batch = self._llm_translate_batch(goals, history)
-            if batch is None:
-                # 批量调用失败 → 逐个兜底，保持原有的可用性（只是更慢）
-                trace.append(TraceStep("propose", "批量翻译失败，回退为逐个翻译", ok=False))
-                batch = [self._llm_translate(g, history) for g in goals]
-            for idx, actions in zip(pending, batch):
-                resolved[idx] = actions or []
+            trace.append(TraceStep("propose", f"LLM 翻译 {len(goals)} 个目标"))
+            for idx, goal in zip(pending, goals):
+                resolved[idx] = self._llm_translate(goal, history) or []
 
         return [(sub_task, resolved[i] or []) for i, sub_task in enumerate(sub_tasks)]
 
@@ -160,40 +155,6 @@ class ManagerAgent:
         # 兜底：LLM 一次性翻译（第二次 LLM 调用）
         trace.append(TraceStep("propose", f"LLM 翻译目标：{sub_task.goal}"))
         return self._llm_translate(sub_task.goal, history)
-
-    def _llm_translate_batch(self, goals: list[str], history: Optional[list]) -> Optional[list[list[dict]]]:
-        """一次调用翻译多个目标。返回与 goals 等长的动作列表列表；失败返回 None。
-
-        用编号列表而不是 JSON 数组传输入，模型对下标对齐的遵循度更好；
-        返回后仍严格校验条数，不足/多余一律判失败并回退逐个翻译。
-        """
-        if not goals:
-            return []
-        numbered = "\n".join(f"{i + 1}. {g}" for i, g in enumerate(goals))
-        # 响应里不回显 goal：延迟主要由输出 token 数决定，省掉回显可少生成约 20% token
-        user = (
-            f"请把下面 {len(goals)} 个操作目标分别翻译为具体设备动作：\n{numbered}\n\n"
-            f'输出 JSON，格式：{{"results": [{{"actions": [{{"device_id": "...", '
-            f'"command": "...", "params": {{}}}}]}}, ...]}}\n'
-            f"results 与上面编号一一对应，数量恰好为 {len(goals)}，不要回显目标文字。"
-        )
-        messages = [{"role": "system", "content": self._build_system_prompt()},
-                    {"role": "user", "content": user}]
-        result = self.llm.chat_json(messages, max_tokens=700, context_text=" ".join(goals))
-        if not isinstance(result, dict):
-            return None
-        rows = result.get("results")
-        if not isinstance(rows, list) or len(rows) != len(goals):
-            return None
-        out: list[list[dict]] = []
-        for row in rows:
-            actions = row.get("actions") if isinstance(row, dict) else None
-            if not isinstance(actions, list):
-                out.append([])
-                continue
-            out.append([a for a in actions
-                        if isinstance(a, dict) and a.get("device_id") and a.get("command")])
-        return out
 
     def _llm_translate(self, goal: str, history: Optional[list]) -> list[dict]:
         system = self._build_system_prompt()

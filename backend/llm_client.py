@@ -23,6 +23,25 @@ except Exception:
 logger = logging.getLogger("llm_client")
 
 
+def resolve_proxies() -> Optional[dict]:
+    """本项目的模型端点一律直连，不走系统代理。
+
+    为什么必须显式绕过：Windows 的系统代理常被设成本地代理端口
+    （实测本机为 http://127.0.0.1:7897）。该代理未启动时 requests 抛
+    ProxyError，而 chat_json 的 except 会把它吞成「返回 None」—— 表现为
+    **LLM 层无声消失、系统静默降级到规则层**，界面上看不出任何异常，
+    演示现场排查成本极高（实测确认：走代理 20-40ms 即失败，直连 0.9-1.9s 正常）。
+
+    另外智谱/DeepSeek/通义等端点均为境内地址，本就不该经过境外代理；
+    实测走代理时单次调用约 5-9s，直连约 1.4-3.3s，代理本身还在增加延迟。
+
+    确实需要代理的场景（例如换成境外端点）用 `LLM_USE_SYSTEM_PROXY=1` 显式开启。
+    """
+    if os.getenv("LLM_USE_SYSTEM_PROXY", "").strip().lower() in ("1", "true", "yes"):
+        return None      # 交回 requests 按环境变量/系统设置解析
+    return {"http": None, "https": None}
+
+
 def _parse_json_object(content: str) -> Optional[dict]:
     """把模型输出解析为 JSON **对象**。解析失败或不是对象一律返回 None。
 
@@ -90,12 +109,16 @@ class LLMBackend:
         self.fail_count = 0
         self.last_fail_time = 0
         self.circuit_breaker = 60  # 连续失败后冷却 60 秒
+        self._warned = False       # 首次失败告警只发一次，避免刷屏
 
     def is_ready(self) -> bool:
         if not self.available:
             return False
         # 熔断：连续失败后冷却
         if self.fail_count >= 3 and time.time() - self.last_fail_time < self.circuit_breaker:
+            self._warn_once(
+                f"熔断器打开（连续失败 {self.fail_count} 次），"
+                f"冷却 {self.circuit_breaker}s 内不再调用该后端")
             return False
         return True
 
@@ -123,14 +146,17 @@ class LLMBackend:
             "response_format": {"type": "json_object"},
         }
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
+            resp = requests.post(url, headers=headers, json=payload,
+                                 timeout=self.timeout, proxies=resolve_proxies())
             if resp.status_code != 200:
                 self._record_failure()
+                self._warn_once(f"HTTP {resp.status_code}: {resp.text[:200]}")
                 return None
             data = resp.json()
             content = data["choices"][0]["message"]["content"]
-        except Exception:
+        except Exception as e:
             self._record_failure()
+            self._warn_once(f"{type(e).__name__}: {e}")
             return None
 
         result = _parse_json_object(content)
@@ -145,6 +171,19 @@ class LLMBackend:
     def _record_failure(self):
         self.fail_count += 1
         self.last_fail_time = time.time()
+
+    def _warn_once(self, detail: str) -> None:
+        """首次调用失败时告警一次。
+
+        失败会被上层吞成「返回 None → 降级到规则层」，系统照常工作，
+        所以 LLM 层其实已经不可用这件事，从接口返回和界面上都看不出来。
+        演示现场最难排查的正是这种无声降级，因此至少要留下一条日志。
+        """
+        if not self._warned:
+            self._warned = True
+            logger.warning(
+                f"[{self.name}] 模型调用失败，已降级到规则层"
+                f"（同类失败后续不再重复告警）: {detail}")
 
 
 class LLMClient:
