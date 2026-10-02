@@ -1,0 +1,378 @@
+{
+  "collected_at": "2026-10-02T23:27:20",
+  "env": {
+    "python": "3.10.2",
+    "platform": "Windows-10-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+    "cpu_count": 24,
+    "llm_offline": "1"
+  },
+  "note": "所有延迟为单进程单线程顺序调用的墙上时间（ms）。样本量为顺序调用次数，未做并发压测；并发表现见 tests_observability.py。",
+  "规则层端到端延迟": {
+    "method": "HomeAgent.decide() 端到端，25 条输入 × 60 轮，各轮前先整体预热一次；按漏斗实际命中的 source 分组统计",
+    "by_source": {
+      "fallback": {
+        "samples": 180,
+        "avg": 0.461,
+        "p50": 0.411,
+        "p95": 0.57,
+        "max": 2.154
+      },
+      "rule": {
+        "samples": 1320,
+        "avg": 8.456,
+        "p50": 8.555,
+        "p95": 20.59,
+        "max": 42.503
+      }
+    },
+    "rule_only": {
+      "samples": 1320,
+      "avg": 8.456,
+      "p50": 8.555,
+      "p95": 20.59,
+      "max": 42.503
+    },
+    "per_input": {
+      "今天天气怎么样": {
+        "samples": 60,
+        "avg": 0.403,
+        "p50": 0.39,
+        "p95": 0.51,
+        "max": 0.531
+      },
+      "你好呀": {
+        "samples": 60,
+        "avg": 0.408,
+        "p50": 0.401,
+        "p95": 0.463,
+        "max": 0.55
+      },
+      "关闭空调": {
+        "samples": 60,
+        "avg": 2.058,
+        "p50": 1.899,
+        "p95": 3.461,
+        "max": 3.923
+      },
+      "到家了": {
+        "samples": 60,
+        "avg": 9.298,
+        "p50": 8.97,
+        "p95": 12.195,
+        "max": 12.906
+      },
+      "加湿器打开": {
+        "samples": 60,
+        "avg": 1.976,
+        "p50": 1.893,
+        "p95": 2.765,
+        "max": 3.952
+      },
+      "卧室开灯": {
+        "samples": 60,
+        "avg": 1.989,
+        "p50": 1.947,
+        "p95": 2.25,
+        "max": 4.123
+      },
+      "太冷了": {
+        "samples": 60,
+        "avg": 7.982,
+        "p50": 7.214,
+        "p95": 11.846,
+        "max": 19.062
+      },
+      "好热": {
+        "samples": 60,
+        "avg": 7.805,
+        "p50": 7.396,
+        "p95": 11.691,
+        "max": 14.097
+      },
+      "我出门了": {
+        "samples": 60,
+        "avg": 16.769,
+        "p50": 16.364,
+        "p95": 21.114,
+        "max": 25.191
+      },
+      "我回家了": {
+        "samples": 60,
+        "avg": 9.442,
+        "p50": 9.129,
+        "p95": 12.178,
+        "max": 18.103
+      },
+      "我走了": {
+        "samples": 60,
+        "avg": 16.481,
+        "p50": 16.343,
+        "p95": 18.773,
+        "max": 19.32
+      },
+      "打开客厅灯": {
+        "samples": 60,
+        "avg": 4.112,
+        "p50": 3.783,
+        "p95": 5.799,
+        "max": 16.028
+      },
+      "打开风扇": {
+        "samples": 60,
+        "avg": 2.041,
+        "p50": 1.952,
+        "p95": 2.972,
+        "max": 3.633
+      },
+      "早上好": {
+        "samples": 60,
+        "avg": 9.589,
+        "p50": 9.238,
+        "p95": 13.154,
+        "max": 14.335
+      },
+      "晚安": {
+        "samples": 60,
+        "avg": 13.241,
+        "p50": 12.737,
+        "p95": 15.703,
+        "max": 24.484
+      },
+      "有客人来": {
+        "samples": 60,
+        "avg": 13.304,
+        "p50": 12.699,
+        "p95": 15.992,
+        "max": 25.758
+      },
+      "氛围弄温馨一点": {
+        "samples": 60,
+        "avg": 0.571,
+        "p50": 0.536,
+        "p95": 0.639,
+        "max": 2.154
+      },
+      "电视音量30": {
+        "samples": 60,
+        "avg": 1.979,
+        "p50": 1.899,
+        "p95": 2.824,
+        "max": 2.925
+      },
+      "省电模式": {
+        "samples": 60,
+        "avg": 13.844,
+        "p50": 12.943,
+        "p95": 17.201,
+        "max": 37.71
+      },
+      "看个片": {
+        "samples": 60,
+        "avg": 11.255,
+        "p50": 10.885,
+        "p95": 14.064,
+        "max": 15.374
+      },
+      "看电影": {
+        "samples": 60,
+        "avg": 10.968,
+        "p50": 10.775,
+        "p95": 12.767,
+        "max": 13.676
+      },
+      "睡觉了": {
+        "samples": 60,
+        "avg": 24.069,
+        "p50": 23.579,
+        "p95": 27.6,
+        "max": 42.503
+      },
+      "空调调到24度": {
+        "samples": 60,
+        "avg": 3.895,
+        "p50": 3.761,
+        "p95": 4.486,
+        "max": 7.255
+      },
+      "窗帘开一半": {
+        "samples": 60,
+        "avg": 1.985,
+        "p50": 1.9,
+        "p95": 3.17,
+        "max": 4.101
+      },
+      "窗帘拉开": {
+        "samples": 60,
+        "avg": 1.95,
+        "p50": 1.884,
+        "p95": 2.598,
+        "max": 3.77
+      }
+    }
+  },
+  "漏斗解析延迟": {
+    "method": "RootAgent.plan()，25 条 × 200 轮",
+    "samples": 5000,
+    "avg": 0.059,
+    "p50": 0.016,
+    "p95": 0.359,
+    "max": 1.013
+  },
+  "设备控制成功率": {
+    "method": "对每个设备类工具按其契约构造一次最小合法参数调用；高危动作走「挂起待确认」故单独计",
+    "device_tools": 64,
+    "ok": 60,
+    "suspended_high_risk": 4,
+    "suspended_tools": [
+      "lock_entry_01__unlock",
+      "lock_entry_01__set_lock_mode",
+      "camera_living_01__start_stream",
+      "gas_stove_kitchen_01__turn_on"
+    ],
+    "failed": 0,
+    "success_rate_non_high_risk": 0.9375,
+    "success_rate_all_tools": 1.0,
+    "failure_examples": []
+  },
+  "感知层融合+情境": {
+    "method": "PerceptionService.perceive()（4 模态 → 融合 → 门控 → 5 参数）",
+    "samples": 300,
+    "avg": 0.088,
+    "p50": 0.074,
+    "p95": 0.13,
+    "max": 2.115
+  },
+  "记忆三源检索": {
+    "method": "各源单次调用（经验库预置 200 条案例）",
+    "手册检索": {
+      "samples": 300,
+      "avg": 0.027,
+      "p50": 0.027,
+      "p95": 0.027,
+      "max": 0.111
+    },
+    "经验检索": {
+      "samples": 200,
+      "avg": 1.847,
+      "p50": 1.685,
+      "p95": 1.975,
+      "max": 22.77
+    },
+    "经验注入构造": {
+      "samples": 200,
+      "avg": 1.891,
+      "p50": 1.723,
+      "p95": 2.126,
+      "max": 11.671
+    },
+    "习惯统计": {
+      "samples": 50,
+      "avg": 0.786,
+      "p50": 0.375,
+      "p95": 0.54,
+      "max": 19.849
+    }
+  },
+  "内环告警与外环日报": {
+    "method": "告警判定含冷却检查；日报事实采集基于 300 条审计记录",
+    "内环告警判定": {
+      "samples": 300,
+      "avg": 0.015,
+      "p50": 0.015,
+      "p95": 0.016,
+      "max": 0.026
+    },
+    "日报事实采集": {
+      "samples": 50,
+      "avg": 0.217,
+      "p50": 0.21,
+      "p95": 0.255,
+      "max": 0.354
+    },
+    "日报模板渲染": {
+      "samples": 50,
+      "avg": 0.216,
+      "p50": 0.213,
+      "p95": 0.224,
+      "max": 0.334
+    }
+  },
+  "源码规模": {
+    "backend/perception": {
+      "py_files": 6,
+      "lines": 1102
+    },
+    "backend/memory": {
+      "py_files": 4,
+      "lines": 622
+    },
+    "backend/observability": {
+      "py_files": 4,
+      "lines": 446
+    },
+    "backend/toolkit": {
+      "py_files": 4,
+      "lines": 465
+    },
+    "backend/agents": {
+      "py_files": 5,
+      "lines": 877
+    },
+    "backend/jobs": {
+      "py_files": 2,
+      "lines": 390
+    }
+  },
+  "慢环延迟（引用记录）": {
+    "source": "experiments/README.md 实验五（2026-10-02 采集）",
+    "model": "glm-4-flash",
+    "note": "未在本脚本内重测：慢环延迟由服务商生成速度主导，随模型/时段/配额波动，单次测量不代表长期表现。重测命令：python tests_performance.py --api",
+    "finding": "耗时 ≈ 1.2s 基线 + 输出 token ÷ 15；与调用次数、prompt 体积无关",
+    "prompt_volume_experiment": [
+      {
+        "prompt_tokens": 51,
+        "completion_tokens": 17,
+        "ms": 3551
+      },
+      {
+        "prompt_tokens": 567,
+        "completion_tokens": 16,
+        "ms": 2834
+      },
+      {
+        "prompt_tokens": 1113,
+        "completion_tokens": 16,
+        "ms": 1311
+      },
+      {
+        "prompt_tokens": 1659,
+        "completion_tokens": 17,
+        "ms": 1800
+      }
+    ],
+    "output_volume_experiment": [
+      {
+        "prompt_tokens": 51,
+        "completion_tokens": 13,
+        "ms": 1277
+      },
+      {
+        "prompt_tokens": 51,
+        "completion_tokens": 48,
+        "ms": 2934
+      },
+      {
+        "prompt_tokens": 51,
+        "completion_tokens": 87,
+        "ms": 6425
+      },
+      {
+        "prompt_tokens": 51,
+        "completion_tokens": 196,
+        "ms": 11978
+      }
+    ]
+  },
+  "duration_seconds": 13.0
+}

@@ -24,13 +24,93 @@ Copyright 2026 灵犀团队
 2) 心镜 · Xinjing AIGC Agent Platform
    来源：心镜迭代（主体）/心镜AIGC5.1/Xinjing-AIGC-Agent-Platform
          （Apache License 2.0）
-   状态：**待移植**。以下机制将在后续阶段从心镜移植到本仓库，
-         届时本 NOTICE 会逐项补充具体文件。
-     - prompt-based ReAct 工具调用循环（计划落地于 backend/agents/react_loop.py）
-     - 多模态置信度自适应加权 + 模态一致性复核（计划落地于 backend/perception/fusion.py）
-     - 成功案例经验复用（计划落地于 backend/memory/experience.py）
-     - LLM 调用日志与并发限流（计划落地于 backend/observability/）
-     - 国产算力探测链 MUSA→CUDA→numpy（计划落地于 backend/perception/gpu.py）
+   状态：**已融合**（2026-10-02）。下列机制已按灵犀自身架构重写落地，
+         本仓库**不含心镜的源代码**。逐项登记如下：
+
+   2.1 多模态置信度融合（算法机制重写）
+       心镜原型：backend/tools/multi_modal_fusion.py
+       本仓库落点：backend/perception/fusion.py
+                   backend/perception/modal_gate.py
+       重写方式：移植三步机制（置信度熵 / 稳定性置信度 / 自适应加权 / 模态一致性
+                 欧氏距离复核），并从二模态**推广到 N 模态**（一致性复核由"两点
+                 距离"改为"最大两两距离"）。
+       **有意识偏离**：心镜在两者置信度均极低时将置信度设为 0.5；本仓库改为
+                 零信息即零置信度并拒绝，不制造中间值。
+
+   2.2 白盒可解释参数体系（方法论借鉴）
+       心镜原型：E1–E12 中间参数
+       本仓库落点：backend/perception/situation.py（5 个家庭情境参数）
+       重写方式：只搬"用可解释中间量替代黑盒端到端"这一方法论；
+                 **参数是自选的，不是从 E1–E12 映射而来**（那是心理领域指标）。
+
+   2.3 声明式判定范式（范式借鉴）
+       心镜原型：backend/vibraimage/mapping/weights.yaml
+       本仓库落点：backend/config/situation_mapping.json
+                   backend/config/alert_routes.json
+                   backend/config/loops.json
+       重写方式：把"信号 → 中间状态向量 → 离散类别"做成纯配置。
+                 **只搬范式不搬数值**；格式由 YAML 改为 JSON（与本仓库既有配置一致，
+                 且避免引入 pyyaml 依赖）。
+
+   2.4 成功案例经验复用（控制流重写）
+       心镜原型：backend/evolution/memory.py
+       本仓库落点：backend/memory/experience.py
+                   backend/agents/root_agent.py（注入点）
+       重写方式：字段去领域化（student_name → context_key）；
+                 **去掉 random.sample，改为确定性排序**（rating*2 + 关键词重合度）
+                 —— 随机抽样使"自进化效果"无法被验证，见本仓库
+                 tests_memory.py 的守门断言；
+                 分类取值域由心理领域改为 scene_plan/fuzzy_command/active_alert。
+
+   2.5 「LLM 优先 + 模板降级」双轨控制流（控制流借鉴）
+       心镜原型：backend/aigc/report_generator.py 等四个领域生成器
+       本仓库落点：backend/jobs/daily_summary.py
+       重写方式：只搬控制流，不搬领域内容与模板文案。
+
+   2.6 可观测性中间件（改写）
+       心镜原型：backend/middleware/logging.py、backend/middleware/rate_limit.py
+       本仓库落点：backend/observability/api_log.py、rate_limit.py、llm_log.py
+       改动点：心镜使用模块级 defaultdict 且无锁，在 asyncio.to_thread 的线程池下
+               并发读写会错位；本仓库全部加锁并配并发正确性测试。
+               限流阈值亦已调整（心镜 60/min 对本项目的 3D 前端过于严格）。
+               llm_log.py 为新增（心镜无此项），提供决策分层延迟。
+
+   2.7 双环参数外置（做法借鉴）
+       心镜原型：backend/config.py 的 pydantic Settings
+       本仓库落点：backend/config/loops.json + backend/config_loader.py
+       重写方式：改用 JSON 配置，不引入 pydantic-settings 依赖。
+
+   2.8 国产算力探测链（**仅保留接缝，未移植实现**）
+       心镜原型：backend/vibraimage/gpu_backend.py
+       本仓库落点：backend/perception/gpu.py
+       说明：**本仓库不主张"国产算力适配"为成果**。理由有二：
+             ① 心镜宣称的 MUSA→CUDA→numpy「三级链」实为两级（无独立 MUSA 代码
+                路径，靠对 CUDA 设备名做 metax/musa 子串匹配识别厂商）；
+             ② 灵犀感知层当前没有计算密集负载，没有可加速的对象。
+             gpu.status() 返回 has_hot_path=False 并附警告，该断言已被测试钉住。
+
+   2.9 **明确未移植**（经评估后放弃）
+       - prompt-based ReAct 工具调用循环（backend/agents/base_agent.py）
+         → **实测否决**：格式遵循度仅 80%（12/15），且延迟无优势。详见
+           experiments/README.md 实验一。故本仓库无 backend/agents/react_loop.py。
+       - VibraImage 引擎本体（约 3000 行）
+         → **心镜自身评测数据不支持将其作为测量工具**（14 参数仅 2/14 ANOVA
+           显著、重测信度 ICC 多为负值）。故仅保留 backend/perception/modalities/
+           vestibular.py 作为接入位，且必须通过多模态一致性检验才能参与。
+       - SQLAlchemy ORM / database.py / models/** / schemas/**
+         → 会破坏本仓库"pip install 即跑"的轻量部署定位。
+       - OrchestratorAgent
+         → 它是硬编码串行 for 循环，不是 planner。
+       - LangChain / LangGraph 层
+         → 见 docs/为什么不用LangChain.md。
+       - SAS/SDS/SCL-90 等心理量表
+         → 纯心理领域，家居场景无对应物（其"交叉验证"思想另见 2.10）。
+
+   2.10 交叉验证思想（机制映射）
+       心镜原型：GET /api/scales/crosscheck/{id}（AI 判断 vs 量表自评一致性）
+       本仓库落点：backend/memory/habits.py::consistency_check
+       重写方式：换数据源 —— 用户**显式声明**的偏好 vs 系统**观察到**的行为，
+                 冲突时主动澄清（问句，不执行动作）。
 
 ================================================================================
 二、第三方依赖

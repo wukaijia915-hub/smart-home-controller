@@ -89,8 +89,11 @@ smart-home-controller/
 │   ├── assets/three.module.js
 │   ├── models/*.glb             10 个 GLB 模型（房屋/家具/绿植）
 │   └── js/{scene,digital_human,app}.js
-├── experiments/                 ★ 方案选型的实测依据（ReAct 遵循度 / 幻觉率 / 延迟归因）
-├── tests_*.py                   8 个回归测试脚本（见第七节）
+├── experiments/                 ★ 方案选型的实测依据（含被否决的路线 + bench_collect.py）
+├── docs/                        ★ 6 份设计文档（见第九节）
+├── data/                        运行时状态（习惯/经验/日报/日志），已 gitignore
+├── demo_fusion.py               融合能力演示（10 个演示点，全程离线）
+├── tests_*.py                   12 个回归测试脚本（见第七节）
 ├── demo_*.py                    场景演示脚本
 ├── requirements.txt
 ├── .env.example                 LLM API 配置模板
@@ -240,15 +243,29 @@ LLM_OFFLINE=1 python tests_performance.py
 | `POST /api/alerts/evaluate` 传 `{"sensors":{"temp_indoor":33}}` | 预演判定，**不产生任何设备动作**，也不污染正在跑的告警冷却 |
 | `POST /api/perception/observe` 传 `now_hour: 2` | 深夜场景当场复现（否则要等到凌晨 2 点才能演示「深夜活动」判定） |
 
-## 九、后续路线
+## 九、设计文档
 
-详见 `docs/融合技术白皮书.md`。近期方向：
+| 文档 | 内容 | 什么时候读它 |
+|---|---|---|
+| [docs/融合技术白皮书.md](docs/融合技术白皮书.md) | 融合叙事、统一设计哲学、创新点对照表、逐项诚实边界 | 想了解"这次升级做了什么、为什么" |
+| [docs/架构图.md](docs/架构图.md) | 8 张架构图（L0–L8 / 统一门控 / 五级漏斗 / 租约状态机 / 双环 / 融合流程 / 经验闭环 / 告警 vs 感知） | **架构图的单一出处**，别处不要复制 |
+| [docs/BENCH.md](docs/BENCH.md) | 性能数据、采集方法、原始 JSON、**以及"这些数字不能用来声称什么"** | 要引用任何性能数字之前 |
+| [docs/感知层可靠性报告.md](docs/感知层可靠性报告.md) | 逐模态验证边界、已知失效模式清单、阈值来源 | 要谈感知层能力之前 |
+| [docs/为什么不用LangChain.md](docs/为什么不用LangChain.md) | 技术选型论证（含对上游 LangGraph 用法的源码核对） | 被问"为什么不用框架"时 |
+| [docs/答辩Q&A预案.md](docs/答辩Q&A预案.md) | 20 个问答、演示顺序、**危险表述清单**、提交前待办 | 答辩前 |
+| [experiments/README.md](experiments/README.md) | 5 项实验记录（含**被否决的路线**及其数据） | **改动架构决策前必读**，避免重复已被证伪的路 |
 
-- **护栏加固**：租约参数包络 + `verify` 全路径（阶段 2）
-- **文档与竞赛资产**：融合技术白皮书 / 架构图 / BENCH / 感知层可靠性报告 / 答辩 Q&A（阶段 5）
+## 十、后续路线
+
+近期方向：
+
+- **接入真实视觉模型**（YOLO / 姿态估计）并补混淆矩阵 —— 优先级最高，
+  让感知层"最可靠的一路"从模拟变成实测
+- **融合层阈值标定**（`MODAL_DISTANCE_THRESHOLD` 等三个常量沿用上游，未做敏感性分析）
+- **护栏加固**：租约参数包络 + `verify` 全路径（阶段 2，有明确陷阱与回退预案）
 - **决策层**：prompt-based ReAct 慢环 —— **已实测否决**（格式遵循度 80% 且延迟无优势），
   写入 Future Work 并附数据，见 `experiments/README.md`
 - **数字人升级**：Live2D / ReadyPlayerMe + uLipSync（3D 化）
 - **真实设备**：Matter / Home Assistant 协议对接（替换虚拟设备驱动，能力契约不变）
-- **国产算力**：感知层计算密集路径接入 MUSA→CUDA→numpy 自动探测链
-  （**当前无热路径，不得作为成果主张** —— `gpu.status()` 会明确警告）
+- **国产算力**：**待接入真实视觉负载之后**再进行
+  （当前无热路径，不得作为成果主张 —— `gpu.status()` 会明确警告）

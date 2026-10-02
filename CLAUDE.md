@@ -30,16 +30,13 @@ smart-home-controller/
 │   ├── gate.py              ★ Gate 抽象（感知层与执行层共用）
 │   ├── agents/              多智能体决策层
 │   │   ├── root_agent.py      Root：编排者，只提议+授权，不执行
-│   │   ├── manager_agent.py   Manager：翻译+校验+执行（最后一道闸门）
-│   │   ├── react_loop.py      ★ prompt-based ReAct 循环（慢环用）
+│   │   ├── manager_agent.py   Manager：校验+执行（最后一道闸门，**不持有 LLM**）
+│   │   ├── plan.py            SubTask / TaskPlan（中立模块，避免循环导入）
 │   │   └── llm_budget.py      ★ LLM 调用预算（次数/token/墙钟）
 │   ├── toolkit/             ★ 工具层（LLM 影响世界的唯一出口）
 │   │   ├── schema_gen.py      从 Device.attributes 反推 schema，永不漂移
-│   │   ├── registry.py        ToolRegistry
-│   │   ├── views.py           root_tools() 只读 / manager_tools() 可写
-│   │   ├── meta_tools.py      元工具实现
-│   │   └── guard.py           ActuationGuard：工具层↔护栏层的唯一接缝
-│   ├── gate.py              ★ Gate 抽象（感知层与执行层共用）
+│   │   ├── registry.py        ToolRegistry（fail closed：未装护栏则拒绝执行）
+│   │   └── guard.py           ManagerGuard：工具层↔护栏层的唯一接缝
 │   ├── perception/          ★ 感知层
 │   │   ├── fusion.py          多模态置信度融合（移植心镜，二模态→N 模态）
 │   │   ├── modal_gate.py      MultiModalGate：融合结果包成统一门控结果
@@ -57,7 +54,7 @@ smart-home-controller/
 │   │   └── llm_log.py         LLM 调用日志 + 决策分层延迟（/api/metrics/llm 的取数来源）
 │   ├── jobs/daily_summary.py ★ 外环：22:00 家庭日报（LLM 优先 / 模板降级）
 │   ├── alerts.py            ★ 内环告警：读数 → 声明式阈值 → 结构化事件
-│   ├── lease.py             授权租约 + 参数包络
+│   ├── lease.py             授权租约 + 高危策略 + LeaseGate
 │   ├── state.py             单一真相源：版本 + 审计日志 + pending 队列
 │   ├── capabilities.py      能力契约 + 别名归一 + 孪生配对
 │   ├── event_routes.py      声明式事件路由（高危动作默认拒绝）
@@ -68,11 +65,17 @@ smart-home-controller/
 │   └── knowledge/           兼容垫片 → 转发到 memory/（不要再依赖）
 ├── data/                    ★ 运行时状态（习惯/经验/日报/定时任务/日志），已 gitignore
 ├── frontend/                原生 JS + Three.js，无构建工具
-├── experiments/             ★ 方案选型的实测依据（读 README.md，含被否决的路线）
-├── docs/                    ★ 设计文档（架构图/BENCH/白皮书/选型论证）
-├── tests_*.py               根目录的回归测试脚本（7 个，见第四节）
+├── experiments/             ★ 方案选型的实测依据（含被否决的路线 + bench_collect.py）
+├── docs/                    ★ 设计文档（架构图/BENCH/白皮书/选型论证/感知层可靠性/答辩Q&A）
+├── tests_*.py               根目录的回归测试脚本（**12 个**，见第四节）
 └── requirements.txt
 ```
+
+> **本目录树只列实际存在的文件。** 曾出现过「树里写着 `react_loop.py` / `views.py` /
+> `meta_tools.py`、仓库里却没有」的情况 —— 那是照抄方案文档留下的漂移，会让读的人
+> （以及后续的 AI 助手）去找不存在的文件。方案里**规划但未实施**的模块（如 ReAct 循环，
+> 已实测否决）写进 `docs/` 与 `.md` 正文的 Future Work，**不写进本目录树**。
+> 改动目录结构时，顺手核对这一段。
 
 **放哪里的规则**
 - 新能力 → 先问「这是感知、决策、工具、护栏、记忆、观测中的哪一层」，放对应目录，不要塞进 `main.py`
@@ -262,8 +265,23 @@ curl -X POST localhost:8000/api/tools/call -H "Content-Type: application/json" \
   （算力后端当前**无热路径**，不得作为成果主张 —— `gpu.status()` 会明确警告）
 - ✅ 阶段 4　**记忆与快慢双环**：记忆三源（手册/习惯/经验）/ 可观测性三件套 /
   外环 22:00 日报（LLM 优先模板降级）/ 声明式内环告警 / 环境联动 / 前端「记忆与观测」面板
-- ⏳ 阶段 2　租约包络与 `verify` 全路径（与阶段 3/4 改动文件不重叠，可穿插做）
-- ⏳ 阶段 5　文档与竞赛资产
+- ✅ 阶段 5　**文档与竞赛资产**：`docs/` 六份设计文档 + `experiments/bench_collect.py`
+  + `demo_fusion.py`（10 个演示点）+ 挑战杯三份文档同步至 V3.0 + `NOTICE` 逐项登记心镜来源
+- ⏳ 阶段 2　租约包络与 `verify` 全路径（与阶段 3/4/5 改动文件不重叠，可穿插做）
+- ⏳ 待办　接入真实视觉模型并补混淆矩阵（感知层优先级最高的一项）
+
+**文档之间的引用关系（改文档时不要制造副本）**
+
+| 想写的内容 | 写在哪 | 谁引用它 |
+|---|---|---|
+| 架构图 | `docs/架构图.md`（**单一出处**） | 白皮书 / 挑战杯方案 / HTML 架构图 |
+| 性能数字 | `docs/BENCH.md`（由 `bench_collect.py` 产出） | 挑战杯方案 §八 / README |
+| 感知层的验证边界 | `docs/感知层可靠性报告.md` | 白皮书 §五 / 挑战杯方案 §八补二 |
+| 选型否决记录 | `experiments/README.md` | 白皮书 / `docs/为什么不用LangChain.md` |
+| 答辩话术 | `docs/答辩Q&A预案.md` | 无（终端文档） |
+
+**不要把架构图或性能数字复制到第二个文件里** —— 复制出来的副本会各自漂移，
+最后没有人知道哪份是真的。
 
 **阶段 4 三条必须记住的边界**（写进申报书前先读这里）
 
