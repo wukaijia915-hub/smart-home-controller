@@ -317,7 +317,7 @@ async def lifespan(app: FastAPI):
         print(f"[记忆·习惯] 退出落盘失败: {type(e).__name__}: {e}")
 
 
-app = FastAPI(title="智能家居数字人中枢", lifespan=lifespan)
+app = FastAPI(title="灵犀 · 门控式大模型家居中枢", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
