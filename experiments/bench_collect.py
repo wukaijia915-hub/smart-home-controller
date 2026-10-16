@@ -105,18 +105,31 @@ def bench_rule_layer(runs: int = 60) -> dict:
 
     samples: dict[str, list[float]] = {}
     by_source: dict[str, list[float]] = {}
+    # **每条输入必须带自己的 source**，否则下游无法区分。实测踩到过：
+    # RULE_INPUTS 里混了 3 条漏斗打不住的（走 fallback 兜底话术，什么都不做，
+    # 反而比规则命中更快返回 0.4ms）。绘图脚本把它们和场景联动画在同一张对比图上，
+    # 得出的"最慢指令"结论是错的 —— 图注说"最慢是场景联动"，
+    # 而图里排第一的是兜底输入。让数据自带分类，这类错误才不会再犯。
+    input_source: dict[str, str] = {}
     for _ in range(runs):
         for text in RULE_INPUTS:
             ms = timeit(lambda t=text: agent.decide(t))
             samples.setdefault(text, []).append(ms)
             src = agent.root.plan(text, {}, []).source
+            input_source[text] = src
             by_source.setdefault(src, []).append(ms)
+    rule_inputs = {t: summarize(v) for t, v in samples.items() if input_source.get(t) == "rule"}
     return {
         "method": f"HomeAgent.decide() 端到端，{len(RULE_INPUTS)} 条输入 × {runs} 轮，"
                   f"各轮前先整体预热一次；按漏斗实际命中的 source 分组统计",
         "by_source": {k: summarize(v) for k, v in sorted(by_source.items())},
         "rule_only": summarize(by_source.get("rule", [])),
+        "input_source": dict(sorted(input_source.items())),
+        "note_per_input": "per_input 含全部输入；**仅 input_source[t]=='rule' 的才是规则层命中**，"
+                          "画对比图时必须过滤，否则兜底输入会混进来",
         "per_input": {k: summarize(v) for k, v in sorted(samples.items())},
+        "rule_hit_per_input": dict(sorted(rule_inputs.items(),
+                                          key=lambda kv: kv[1]["avg"], reverse=True)),
     }
 
 
