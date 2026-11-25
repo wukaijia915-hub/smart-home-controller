@@ -1,18 +1,19 @@
-# CLAUDE.md — 灵犀（LingXi）· 门控式大模型家居中枢
+# CLAUDE.md — 犀鉴 · 基于 Wi-Fi CSI 的隐私优先家庭感知与可信自适应系统
 
 **项目全称（申报书/文档标题一律用这个，不要用变体）**：
-> 灵犀 —— 面向全屋异构智能家居的**可审计大模型执行**与**门控式多模态感知**中枢
+> 犀鉴 —— 面向全屋异构智能家居的**隐私优先家庭感知**与**可信自适应**系统
+> 对外口号：**更安全、更智能的智能家居系统**（安全与智能并列，两根支柱）
 
-命名理由（改动前先读）：
-- 旧名「智能家居协同中枢」只描述了**领域**，没描述技术内核 —— 任何做这个方向的人都能用，
-  等于没有名字。新名的两个定语各自对应一个可在代码里验证的技术事实。
-- 「**可审计**」而非「可信」：可信是任何安全相关项目都能用的泛词，且与硬件安全的
-  TEE（可信执行环境）撞术语；可审计则能直接指着代码举证 ——
-  `StateStore.audit_log`、`/api/tools/log`、回读三态证据、租约记录。
-- 「**门控式**」是自造词，一眼新；它对应 `backend/gate.py` 的统一 `Gate` 抽象，
-  不是修辞（见下方第一节）。
-- 主名「灵犀」与中国移动「灵犀家庭智能体」相邻领域重名，处理方式是在
-  `挑战杯/技术文档/技术实现方案.md` §2.5 主动澄清定位差异，不回避。
+命名与口径（改动前先读）：
+- 前身「灵犀 · 门控式大模型家居中枢」。2026-11 按《2027 广东攀登计划申报书 v6》
+  升级为「犀鉴」，定位从"大模型中枢"转为"Wi-Fi CSI 隐私优先感知 + 可信自适应"。
+  代码目录/包名不改（`backend/`），环境变量 `XIJIAN_DATA_DIR` 优先、`LINGXI_DATA_DIR` 回退。
+- 「**隐私优先**」有代码落点：原始 CSI 只在节点与本地后端处理，不落云、不进日志；
+  上云仅结构化标签；`to_dict()` 不含原始 CSI。不是修辞。
+- 「**可审计**」有代码落点：`StateStore.audit_log`、六段因果链（`/api/trust/{id}`）、
+  回读三态证据、撤销记录。不要用"可信"替代——与 TEE 撞术语。
+- 对外统一说「**三态判定，四值实现**」：`present_confident / empty_confident /
+  uncertain / degraded`；`degraded` 是降级语义，不是第四种判定。
 
 本文件是本仓库的开发约定，**所有改动必须先读本文件**。需要调整约定时，先改本文件、再改代码。
 
@@ -20,18 +21,22 @@
 
 ## 一、项目定位
 
-**灵犀 2.0**：面向全屋异构智能家居的「确定性内核 + 可编排 LLM 外壳 + 门控式多模态感知」端云协同数字人中枢。
+**犀鉴 2.0**：五层架构——射频基线（外部）→ 房间融合 → 多源校验 → 信任层 → L5 目标级自主。
 
 核心设计哲学（**贯穿全栈，改动时不可违背**）：
 
 > **同一个"不信任单一信号源"的原则，贯穿感知层与执行层。**
+> 感知侧：单个 CSI 节点说"没运动"不等于房间无人；
+> 执行侧：单条 LLM 提议不等于可以落地。
 
 | 层 | 单一信号源的风险 | 门控机制 |
 |---|---|---|
-| 感知层 | 单模态误判（光照导致面部误判等） | 多模态置信度自适应加权 + 模态一致性复核，冲突即丢弃 |
-| 执行层 | LLM 幻觉 / 越权 / 重放 | 授权租约 + 参数包络 + 状态版本校验 + 高危二次确认 |
+| 感知层 | `idle` 误当无人（静坐/宠物/掉线） | 三态判定 + 六路旁证 + 冲突归因；单源不得判 empty |
+| 执行层 | LLM 幻觉 / 越权 / 重放 / 说不等于做 | 唯一执行入口 + 租约 + 包络 + 四道闸 + 高危确认 + 六段链 |
+| 输出层 | "嘴上说做完了" | claim 校验（只读） |
 
-两侧共用 `backend/gate.py` 的 `Gate` 抽象。**新增任何门控逻辑时，必须实现 `Gate` 接口，不要另起一套。**
+`backend/gate.py` 仍是统一 Gate 抽象；新增门控逻辑必须复用，不要另起一套。
+
 
 ---
 
@@ -41,6 +46,7 @@
 smart-home-controller/
 ├── backend/
 │   ├── main.py              FastAPI 入口：装配单例、挂路由、中间件、lifespan 后台循环
+│   ├── execution.py         ★ 唯一写入口（租约/包络/四道闸/审计/回读/撤销记录）
 │   ├── gate.py              ★ Gate 抽象（感知层与执行层共用）
 │   ├── agents/              多智能体决策层
 │   │   ├── root_agent.py      Root：编排者，只提议+授权，不执行
@@ -50,14 +56,27 @@ smart-home-controller/
 │   ├── toolkit/             ★ 工具层（LLM 影响世界的唯一出口）
 │   │   ├── schema_gen.py      从 Device.attributes 反推 schema，永不漂移
 │   │   ├── registry.py        ToolRegistry（fail closed：未装护栏则拒绝执行）
+│   │   ├── scoping.py         按意图裁剪设备清单/工具集（无信号不裁剪、高危默认不可见）
 │   │   └── guard.py           ManagerGuard：工具层↔护栏层的唯一接缝
+│   ├── verification/        ★ 输出层只读校验（v1.1）
+│   │   └── claim_checker.py   回复声明 vs 执行记录（不 import 设备层/租约层）
+│   ├── drafts.py            ★ 规则草稿箱 + confirm_draft（草稿→确认的唯一不变式）
+│   ├── version.py           ★ 版本单一出处（/healthz 与文档都从这里取）
+│   ├── ingest/              ★ 射频接入层（P1a，未接主链）
+│   │   ├── espectre_mqtt.py   订阅 motion/health/wifi/sensing；无 paho 时 available()=False
+│   │   └── node_registry.py   节点注册 / 心跳 / sweep 判 stale（区分 last_seen 与 last_event_at）
 │   ├── perception/          ★ 感知层
 │   │   ├── fusion.py          多模态置信度融合（移植心镜，二模态→N 模态）
 │   │   ├── modal_gate.py      MultiModalGate：融合结果包成统一门控结果
 │   │   ├── situation.py       白盒情境参数（5 个，每个带真值来源与原始依据）
+│   │   ├── rooms.py           房间四态融合：只出 present/uncertain/degraded，empty 交给旁证
+│   │   ├── corroboration.py   ★ 六路旁证 + 冲突归因（只有它能提升 empty_confident）
+│   │   ├── room_service.py    ★ 节点接入 → 融合 → 旁证 → 事件（5s 环）
 │   │   ├── service.py         感知层入口：模态 → 融合 → 门控 → 询问式建议
 │   │   ├── gpu.py             算力后端探测（如实标注：当前无热路径，不是成果）
 │   │   └── modalities/        各模态检测器（视觉行为/环境行为/面部/前庭）
+│   ├── trust/               ★ 信任层：explain（六段链）/ undo（前态/逆动作/窗口/漂移）
+│   ├── adaptation/         ★ L5：preference / objectives / policy / service
 │   ├── memory/              ★ 记忆层三源（只读世界，不写世界）
 │   │   ├── habits.py          习惯统计 + 显式偏好一致性校验
 │   │   ├── manuals.py         设备手册检索（含共用打分函数）
@@ -75,14 +94,23 @@ smart-home-controller/
 │   ├── edge_cloud.py        端云隐私分级 L0/L1/L2
 │   ├── devices/             设备抽象 + 虚拟设备工厂
 │   ├── config/              JSON 配置（devices/scenes/environment/capabilities/
-│   │                         event_routes/alert_routes/situation_mapping/loops）
+│   │                         event_routes/alert_routes/situation_mapping/loops/
+│   │                         wifi_csi/room_fusion/trust/adaptation）
 │   └── knowledge/           兼容垫片 → 转发到 memory/（不要再依赖）
-├── data/                    ★ 运行时状态（习惯/经验/日报/定时任务/日志），已 gitignore
+├── data/                    ★ 运行时状态（习惯/经验/日报/定时任务/日志/自定义事件路由），已 gitignore
 ├── frontend/                原生 JS + Three.js，无构建工具
 ├── experiments/             ★ 方案选型的实测依据（含被否决的路线 + bench_collect.py）
-├── docs/                    ★ 设计文档（架构图/BENCH/白皮书/选型论证/感知层可靠性/答辩Q&A）
-├── tests_*.py               根目录的回归测试脚本（**12 个**，见第四节）
-└── requirements.txt
+├── docs/                    ★ 设计文档（架构图/BENCH/白皮书/选型论证/感知层可靠性/答辩Q&A/
+│                              安全排查报告/数据流向说明/部署指南/凭据轮换清单）
+├── tools/csi_probe.py       ★ P0 独立探针（不 import backend）
+├── tests_*.py               根目录的回归测试脚本（**15 个**，见第四节）
+├── run_tests.py             ★ 统一门禁入口（15 脚本 + LLM_OFFLINE + 临时数据目录 + UTF-8）
+├── Dockerfile               ★ 单容器部署（非 root + HEALTHCHECK 打 /healthz）
+├── docker-compose.yml       ★ 单服务编排（mem_limit / restart / 配置只读挂载）
+├── .github/workflows/test.yml  CI：push/PR 跑 `python run_tests.py`
+├── requirements.txt
+├── requirements-csi.txt     可选：只放 paho-mqtt
+└── .env.example             LLM API 配置模板（含 LLM_OFFLINE / LINGXI_DATA_DIR 说明）
 ```
 
 > **本目录树只列实际存在的文件。** 曾出现过「树里写着 `react_loop.py` / `views.py` /
@@ -108,7 +136,7 @@ smart-home-controller/
 
 | 指标 | 当前实测 | 红线 |
 |---|---|---|
-| 规则层响应延迟 | 平均 **0.13ms**，p95 0.26ms | **平均 <10ms，p95 <100ms** |
+| 规则层响应延迟 | 平均 **0.25ms**，p95 0.51ms（v2.0 实测；设备 19 台后从 0.15 升至 0.25） | **平均 <10ms，p95 <100ms** |
 | 设备控制成功率 | 64/64 = 100% | **100%** |
 | 决策准确率（标准场景集 S1-S11） | 离线 100%（90/90） | **≥90%** |
 | 前端渲染帧率 | 56 FPS（待浏览器复测） | ≥30 FPS |
@@ -162,25 +190,19 @@ smart-home-controller/
 ```bash
 cd smart-home-controller
 
-# 快速回归（改小东西时）
-LLM_OFFLINE=1 python tests_smoke.py
+# 全量门禁（一条命令；自动 LLM_OFFLINE=1 + 临时 LINGXI_DATA_DIR + UTF-8）
+python run_tests.py
 
-# 全量门禁（每个阶段收尾必须 12 脚本全绿）
-# 建议加 LINGXI_DATA_DIR 指向临时目录，避免测试写进真实用户数据
-export LINGXI_DATA_DIR=$(mktemp -d)
-LLM_OFFLINE=1 python tests_smoke.py \
-  && LLM_OFFLINE=1 python tests_agents.py \
-  && LLM_OFFLINE=1 python tests_capabilities.py \
-  && LLM_OFFLINE=1 python tests_edge_cloud.py \
-  && LLM_OFFLINE=1 python tests_error.py \
-  && LLM_OFFLINE=1 python tests_funnel.py \
-  && LLM_OFFLINE=1 python tests_budget.py \
-  && LLM_OFFLINE=1 python tests_perception.py \
-  && LLM_OFFLINE=1 python tests_memory.py \
-  && LLM_OFFLINE=1 python tests_observability.py \
-  && LLM_OFFLINE=1 python tests_loops.py \
-  && LLM_OFFLINE=1 python tests_performance.py
+# 只跑某几个 / 看完整输出 / 列脚本
+python run_tests.py --only tests_agents.py tests_loops.py
+python run_tests.py --verbose
+python run_tests.py --list
 ```
+
+**不要手敲 `python tests_xxx.py` 做门禁**。三个坑都会静默发生：漏
+`LLM_OFFLINE=1` 会打真实模型（结果 flaky）、漏 `LINGXI_DATA_DIR` 会写真实用户数据、
+GBK 控制台会把 ✓ 打成 `UnicodeEncodeError`（"全红"其实全过）。`run_tests.py`
+把这三件事固定下来了，CI 用的也是同一条命令。
 
 **门禁必须带 `LLM_OFFLINE=1`**：否则测试会打真实网络请求，结果随模型输出波动而 flaky
 （已实测复现：`manager_agent._llm_translate` 曾因模型返回 JSON 数组而崩溃）。
@@ -208,6 +230,12 @@ curl -X POST localhost:8000/api/tools/call -H "Content-Type: application/json" \
 **分层不可违反**
 - `RootAgent` **只提议、只授权，绝不执行设备**
 - `ManagerAgent` 是唯一执行入口，且必须走 `LeaseValidator`
+- **所有执行入口共用 `ManagerGuard`**：对话、`/api/tools/call`、MCP `tools/call`、
+  `/api/control`、`/api/scene`、WS `control`/`scene`、技能执行，全部经
+  `manager_guard.actuate(...)`。`main.py` 里**不允许出现直连 `registry.control(`**
+  （`tests_agents.test_no_direct_control_in_routes` 用 AST 静态扫描守门）。
+  事件路由是唯一的例外路径：它是"无人确认"通道，自带 `allow_high_risk` 语义，
+  不得再用 `ManagerGuard`（否则高危联动会被挂起到一个没人点的弹窗上）
 - **`ManagerAgent` 不持有、不调用 LLM**。它是纯护栏：校验 / 授权 / 执行 / 记录。
   Root 已在慢环给出具体动作，Manager 不需要也无法再"翻译"一次。
   `tests_funnel.py` 第 6 节把这条钉住了。**若将来有人想在 Manager 里加 LLM 调用，
@@ -233,6 +261,35 @@ curl -X POST localhost:8000/api/tools/call -H "Content-Type: application/json" \
    没有人点「确认执行」）。`event_routes._refuse_high_risk()` 默认拒绝，
    需要自动执行的路由必须在配置里显式写 `"allow_high_risk": true` ——
    让这个决定被写下来、被评审看到，而不是悄悄发生。
+8. **CSI 接入的两条语义（P1a）**。`backend/ingest/node_registry.py` 把 `last_seen`
+   （任意消息）与 `last_event_at`（motion/idle）分开：`stale` 只由后者判定，
+   health 心跳**不能**给事件新鲜度续命。`backend/perception/rooms.py::fuse_rooms()`
+   **永不输出** `empty_confident`；全部 idle 超时只置 `empty_candidate=True`，
+   必须由 P2 的 `corroborate()` 在旁证一致后提升。两条都由 `tests_csi.py` 守门。
+9. **输出层只读（v1.1）**。`backend/verification/` 只能看本轮的
+   `actions`/`results`/设备元数据，并给出如实注记；**不得执行设备、不得签发租约、
+   不得 import 设备层/租约层**。`tests_agents.test_verification_layer_is_readonly`
+   用 AST 扫描 import 守门。理由与红线 6 相同：这是"只读世界"的层，
+   一旦它能动手，"声明校验"就变成了第二个执行入口。
+10. **草稿不是动作，确认才落库（v1.1）**。条件句只能生成草稿
+    （`backend/drafts.py`，10 分钟 TTL、不落盘）；确认逻辑必须在
+    `drafts.confirm_draft()` 这一处，REST 与 WS 共用，不得在路由里各写一遍。
+    草稿里含高危动作时，确认必须显式 `allow_high_risk=true`，否则整条拒绝。
+11. **裁剪不是权限（v1.1）**。`toolkit/scoping.py` 只决定"模型这一轮看见什么"，
+    不改变"谁能做什么"：无信号时**不裁剪**（模糊指令必须保留全量视野），
+    高危命令默认不可见，但即使显式可见，仍会被 Manager 的高危二次确认拦住。
+    不要把"裁掉了"当成"禁用了"——那是两回事。
+12. **唯一写入口（v2.0）**。`registry.control(` 只允许出现在 `backend/execution.py`；
+    Manager、EventRouter、场景、工具、撤销、L5 全部经 `execution.execute_action/plan`。
+    `tests_trust.py` 用 AST 扫描整个 `backend/`，其它模块出现即失败。
+13. **信任层/自治层不执行（v2.0）**。`backend/trust/` 与 `backend/adaptation/`
+    不得出现 `registry.control(` 调用；`undo` 只生成逆动作，执行由
+    `execution.execute_plan(source="undo")` 完成；L5 只提议，执行由
+    `execution.execute_plan(source="adaptation")` 完成。
+14. **三态的语义边界（v2.0）**。`uncertain` 永不触发 `no_person`/关灯/关空调；
+    `degraded` 只下调置信度并告警，**禁止推断无人**；`empty_confident` 只能由
+    `corroboration.corroborate()` 在旁证 ≥ min_sources 后提升。
+    `tests_csi.py` 第 8/9 节与事件路由共同守门。
 
 **⚠️ 一个必须能当场分辨的区别：内环告警可以自动开空调，感知层不可以**
 
@@ -253,7 +310,7 @@ curl -X POST localhost:8000/api/tools/call -H "Content-Type: application/json" \
 - 密钥、token、密码不进代码、不进 commit、不进日志。`.env` 已在 `.gitignore`，**永不提交**
 - 新增第三方依赖前先问：能否用标准库？`requirements.txt` 的"5 行、pip install 即跑"是核心卖点，**重型依赖（如 TensorFlow）必须放 `requirements-vision.txt` 并保证未安装时优雅降级**
 
-### 5.4 写测试时要避开的三个坑（都已实测踩过，各有守门测试）
+### 5.4 写测试时要避开的四个坑（都已实测踩过，各有守门测试）
 
 1. **不要让断言取决于跑测试的钟点**。`late_night_activity` 规则在 23:00–05:00 生效，
    而服务层测试原本用 `datetime.now()`：同一份代码 22:00 跑是绿的、23:01 跑就红。
@@ -265,6 +322,10 @@ curl -X POST localhost:8000/api/tools/call -H "Content-Type: application/json" \
 3. **不要让测试写真实用户数据**。测试必须设 `LINGXI_DATA_DIR` 到临时目录。
    曾经的后果：`user_habits.json` 累积几千次测试调用，界面上显示
    「用户最常用场景 home（使用 1842 次）」—— 那是纯测试噪声，不是用户行为。
+4. **不要让门禁靠手敲**。15 条命令手敲时，漏一个 `LLM_OFFLINE=1` 就会打真实模型、
+   漏 `LINGXI_DATA_DIR` 就会写真实数据；Windows 控制台默认 GBK，打印 ✓ 会
+   `UnicodeEncodeError`，让"15 个全过"显示成"8 个失败"。统一走
+   `python run_tests.py` —— 它把三件事都固定住了，CI 用同一条命令。
 
 ---
 
@@ -281,8 +342,22 @@ curl -X POST localhost:8000/api/tools/call -H "Content-Type: application/json" \
   外环 22:00 日报（LLM 优先模板降级）/ 声明式内环告警 / 环境联动 / 前端「记忆与观测」面板
 - ✅ 阶段 5　**文档与竞赛资产**：`docs/` 六份设计文档 + `experiments/bench_collect.py`
   + `demo_fusion.py`（10 个演示点）+ 挑战杯三份文档同步至 V3.0 + `NOTICE` 逐项登记心镜来源
-- ⏳ 阶段 2　租约包络与 `verify` 全路径（与阶段 3/4/5 改动文件不重叠，可穿插做）
-- ⏳ 待办　接入真实视觉模型并补混淆矩阵（感知层优先级最高的一项）
+- ✅ **v1.1　工程化吸收（2026-11-24）**：单一执行入口（5 条旁路关闭）/ 每控必核回读证据
+  （原因 + 可信标记）/ 参数包络 / 输出层声明校验 / 按意图裁剪设备与工具 / 草稿→确认建规则 /
+  `/healthz` + Docker + CI + `run_tests.py` / 四份交付文档。
+  13 脚本全绿，规则层 0.15ms（p95 0.29ms）。逐条记录见
+  `docs/安全与稳定性排查报告.md`（N1–N9）
+- ✅ **v2.0　犀鉴（2026-11-25）**：按申报书 v6 完成五层落地 ——
+  房间四态 + 六路旁证（`rooms/corroboration/room_service`）、
+  唯一执行入口 + 六段链 + 10 分钟撤销（`execution/trust`）、
+  L5 偏好带 + 仲裁 + 四道闸 + 冷启动/降级（`adaptation`）、
+  设备 17→19（热水器/除湿机）、房间/信任/自治面板、
+  15 脚本全绿（csi 104 / trust 48 / adaptation 28）。
+- ⏳ **P1b 真机接入**：MQTT 已接主链（`room_service.start_ingest()`），
+  但当前 `wifi_csi.enabled=false`、无 ESP32 节点；阶段一的三项实测（72h 稳定、
+  三态混淆矩阵、空—静—空语料）**尚未开始**，不得写成已完成。
+- ⏳ 阶段 2　租约包络写进租约本身 + `verify` 全路径（同轮多动作需按动作序号记账）。
+- ⏳ 待办　接入真实视觉模型并补混淆矩阵（感知层优先级最高的一项）。
 
 **文档之间的引用关系（改文档时不要制造副本）**
 
@@ -293,6 +368,13 @@ curl -X POST localhost:8000/api/tools/call -H "Content-Type: application/json" \
 | 感知层的验证边界 | `docs/感知层可靠性报告.md` | 白皮书 §五 / 挑战杯方案 §八补二 |
 | 选型否决记录 | `experiments/README.md` | 白皮书 / `docs/为什么不用LangChain.md` |
 | 答辩话术 | `docs/答辩Q&A预案.md` | 无（终端文档） |
+| 缺陷/安全台账与验证记录 | `docs/安全与稳定性排查报告.md` | 答辩"做过排查吗" / 申报书工程能力段 |
+| 数据分级、出网点、留存策略 | `docs/数据流向说明.md` | 合规问询 / 交付物料 |
+| 部署步骤与故障排查 | `docs/部署指南.md` | 换机器/交付/演示前 |
+| 密钥轮换步骤 | `docs/凭据轮换清单.md` | 怀疑泄露/换机器时 |
+| 五层架构、创新点、自研边界 | `docs/犀鉴-五层架构与创新点.md` | 对外材料 / 答辩"你们做了什么" |
+| 三态语义、六路旁证、冲突归因 | `docs/三态判定与多源校验.md` | 答辩"idle 为什么不算无人" |
+| L5 偏好带/仲裁/四道闸/冷启动 | `docs/L5自治设计.md` | 答辩"L5 和自动化有什么区别" |
 
 **不要把架构图或性能数字复制到第二个文件里** —— 复制出来的副本会各自漂移，
 最后没有人知道哪份是真的。
@@ -339,6 +421,8 @@ curl -X POST localhost:8000/api/tools/call -H "Content-Type: application/json" \
 - ~~D18~~ **条件指令被立即执行**：`如果客厅没人了就把灯关掉吧` 曾被 4ms 内当成"立即关灯"
   执行。条件是"创建自动化规则"，不是"立刻动作"。已加条件句保护（同时出现条件词与
   结果词才判定），诚实拒绝而非静默执行　**已修**
+  → **v1.1 升级**：条件句现在生成**规则草稿**，确认后才落库
+  （`drafts.py` + `draft_rules.json`），解析不出仍回到诚实拒绝
 - ~~（性能）~~ Manager 逐子任务各调一次 LLM（`1+N` 次）→ 改为批量翻译（`1+1` 次），
   实测 trace 已生效。**但总耗时未改善，瓶颈在模型生成速度**，见上方硬指标说明
 
@@ -415,8 +499,12 @@ curl -X POST localhost:8000/api/tools/call -H "Content-Type: application/json" \
 待处理：
 - **D6** `root_agent.py` 设备正则仍偏宽（`if "空调" in text` 之类），已排在能力契约之后
   缓解，但未根治 → 阶段 2 前评估是否值得继续投入
-- **D7** 租约参数包络未实现；`_execute` 用 `is_expired` 绕过版本校验 → 阶段 2
-- **D9** `.env` 含真实智谱 API Key，**需轮换**（属红线操作，须用户确认后执行）→ 待办
+- **D7（部分已修）** 参数包络已在 Manager 落地（`_verify_params`，v1.1）；
+  仍缺「包络写进租约本身」与 `_execute` 的完整版本校验
+  （同轮多动作会 bump 版本，要按动作序号/基线记账，不能简单改成 full verify）→ 阶段 2
+- **D9** `.env` 含真实智谱 API Key。**2026-11-24 已核实 `git log --all -- .env`
+  为空（密钥未入库）**，但仍建议轮换（桌面压缩包/同步盘/远程协助都可能带走）；
+  步骤见 `docs/凭据轮换清单.md` → 待办（需用户执行，属红线操作）
 - **D26** 记忆层的偏好一致性校验只覆盖温度/亮度两个键（`_OBSERVED_ATTR`）。
   够用且诚实（没有推断，只有这两类有稳定的"声明值 vs 观察值"对应），
   但不要在文档里写成"支持全部偏好类型"

@@ -179,12 +179,16 @@ class SkillManager:
         return best[1] if best else None
 
     # ---------- 执行 ----------
-    def execute(self, skill_id: str, registry) -> dict:
+    def execute(self, skill_id: str, registry, actuate=None) -> dict:
         """执行技能。
 
         **高危命令一律拒绝**：技能是"一键触发一串动作"的批量入口，
         若允许它直接下发 unlock / 燃气灶点火，就绕过了 Manager 的二次确认闸门。
         高危动作必须由用户单独下达指令，走正常的高危挂起流程。
+
+        `actuate` 为可选执行器（通常是 `ManagerGuard.actuate`）。传入时技能动作
+        与对话路径共用同一条护栏链（租约/版本/审计/回读）；不传则退回
+        `registry.control`，仅为兼容旧调用与测试。
         """
         skill = self._skills.get(skill_id)
         if not skill:
@@ -192,6 +196,17 @@ class SkillManager:
         if not skill.get("enabled"):
             return {"ok": False, "error": f"技能已禁用: {skill['name']}"}
 
+        # 唯一写入口：没有注入 actuate 时也走 execution，而不是直连 registry.control
+        # （静态扫描要求 backend/ 里只有 execution.py 能调 registry.control）。
+        if actuate is None:
+            from . import execution
+
+            def runner(did, cmd, params):
+                return execution.execute_action(did, cmd, params, registry=registry,
+                                                store=None, source="skill",
+                                                allow_high_risk=True)
+        else:
+            runner = actuate
         results = []
         for action in skill.get("actions", []):
             device_id = action.get("device_id", "")
@@ -209,7 +224,7 @@ class SkillManager:
                                 "error": f"「{desc}」属高危操作，不能通过技能批量执行，"
                                          f"请单独下达指令以触发二次确认"})
                 continue
-            results.append(registry.control(device_id, command, params))
+            results.append(runner(device_id, command, params))
 
         succeeded = sum(1 for r in results if r.get("ok"))
         logger.info(f"执行技能 {skill['name']}: {succeeded}/{len(results)} 个动作成功")

@@ -54,6 +54,8 @@ from .fusion import (  # noqa: E402
     stability_confidence,
 )
 from .modal_gate import MultiModalGate  # noqa: E402
+from .corroboration import CorroborationResult, corroborate  # noqa: E402
+from .room_service import RoomService  # noqa: E402
 from .modalities import (  # noqa: E402
     EnvironmentBehaviorModality,
     FacialExpressionModality,
@@ -82,6 +84,9 @@ __all__ = [
     "ModalReading",
     "MultiModalFuser",
     "MultiModalGate",
+    "CorroborationResult",
+    "corroborate",
+    "RoomService",
     "classify_emotion_7class",
     "entropy_confidence",
     "stability_confidence",

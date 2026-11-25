@@ -22,7 +22,8 @@ def data_dir() -> Path:
     界面上会显示「用户最常用场景 home（使用 1842 次）」这种纯属测试噪声的结论。
     测试改成指向临时目录后，真实数据才可信。
     """
-    override = os.getenv("LINGXI_DATA_DIR", "").strip()
+    override = (os.getenv("XIJIAN_DATA_DIR", "").strip()
+                or os.getenv("LINGXI_DATA_DIR", "").strip())
     return Path(override) if override else DEFAULT_DATA_DIR
 
 
@@ -69,10 +70,51 @@ def load_alert_routes() -> dict:
     return _load_json("alert_routes.json")
 
 
+# ---------- CSI / 信任 / 自治（v1.0 新增，全部走配置） ----------
+def load_wifi_csi() -> dict:
+    """加载 ESPectre 节点接入配置（默认 enabled=false）。"""
+    return _load_json("wifi_csi.json")
+
+
+def load_room_fusion() -> dict:
+    """加载房间融合配置：房间清单、四态规则、置信度权重。"""
+    return _load_json("room_fusion.json")
+
+
+def load_trust() -> dict:
+    """加载信任层配置：撤销窗口、可逆/不可逆命令清单。"""
+    return _load_json("trust.json")
+
+
+def load_adaptation() -> dict:
+    """加载 L5 自治配置：四道闸、冷启动、漂移降级。"""
+    return _load_json("adaptation.json")
+
+
+# ---------- 工具裁剪 / 对话建规则（v1.1 新增，全部走配置） ----------
+def load_tool_scope() -> dict:
+    """加载按意图裁剪配置：关键词 → 房间/类别/高危命令。
+
+    改关键词不需要改 Python：新增设备类别或房间说法，只动这个 JSON。
+    """
+    return _load_json("tool_scope.json")
+
+
+def load_draft_rules() -> dict:
+    """加载对话建规则的「条件 → 事件」映射（草稿→确认两段式）。"""
+    return _load_json("draft_rules.json")
+
+
 def reload_all() -> dict:
     """重新加载所有配置（热重载）。"""
     return {
         "devices": load_devices(),
         "scenes": load_scenes(),
         "environment": load_environment(),
+        "wifi_csi": load_wifi_csi(),
+        "room_fusion": load_room_fusion(),
+        "trust": load_trust(),
+        "adaptation": load_adaptation(),
+        "tool_scope": load_tool_scope(),
+        "draft_rules": load_draft_rules(),
     }

@@ -1,5 +1,5 @@
-灵犀（LingXi）智能家居数字人中枢
-Copyright 2026 灵犀团队
+犀鉴 · 基于 Wi-Fi CSI 的隐私优先家庭感知与可信自适应系统
+Copyright 2026 犀鉴团队（前身：灵犀 LingXi）
 
 本产品包含由第三方以开源许可证提供的组件与设计思想。以下逐项列明来源，
 按「直接引用代码」与「参考设计思想后重写」两类分别标注。
@@ -112,6 +112,28 @@ Copyright 2026 灵犀团队
        重写方式：换数据源 —— 用户**显式声明**的偏好 vs 系统**观察到**的行为，
                  冲突时主动澄清（问句，不执行动作）。
 
+3) ESPectre（Wi-Fi CSI 射频基线）
+   来源：https://github.com/francescopace/espectre
+        许可证：**GPL-3.0-only**；本地核验版本：v3.1.0（2026-11-01）。
+   关系：**不是代码依赖，本仓库不含其源代码**。本项目只消费其对外事件契约：
+         - MQTT topic `espectre/v1/devices/{device_id}/motion|health|wifi|sensing|...`
+         - JSON 字段：state（idle|motion）、score、timestamp_ms、rssi_dbm、
+           calibration_state
+         固件与检测器在**独立仓库/设备**上运行；本仓库不 import、不复制、不修改
+         其代码，也不分发其固件或数据集。
+   本仓库落点（均为本项目自研）：
+     - backend/ingest/espectre_mqtt.py   契约解析与消息分类
+     - backend/ingest/node_registry.py   节点生命周期（last_seen / last_event_at 分离）
+     - backend/perception/rooms.py       节点 → 房间四态融合
+     - backend/perception/corroboration.py 六路旁证与冲突归因
+     - backend/perception/room_service.py  接入/房间/事件编排
+     - tools/csi_probe.py                独立探针（不 import backend）
+   许可证边界：ESPectre 为 GPL-3.0-only，本项目为 Apache-2.0。二者通过
+         MQTT/HTTP 的**进程边界**通信，不构成衍生作品。若未来复制其任何代码或
+         固件，必须按 GPL-3.0 兼容方式整体处理并在本文件登记；当前没有这样做。
+   数据说明：官方数据集仅用于离线回放、核对接入代码，不作为本项目实测证据；
+         本项目的性能/误报数字必须来自自采数据，并在报告中标注采集条件。
+
 ================================================================================
 二、第三方依赖
 ================================================================================
@@ -121,6 +143,7 @@ Copyright 2026 灵犀团队
   python-dotenv               BSD-3-Clause
   edge-tts                    LGPL-3.0
   apscheduler                 MIT
+  paho-mqtt（可选）            EPL-2.0 / EDL-1.0   （requirements-csi.txt，仅 CSI 接入用）
   Three.js (r160)             MIT        （frontend/assets/three.module.js，本地化）
 
 ================================================================================

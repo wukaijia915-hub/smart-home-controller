@@ -74,7 +74,7 @@ def fig_rule_latency_dist(d: dict) -> Path:
                label=f"各指令 p95 均值 {p95s.mean():.3f} ms")
     ax.set_xlabel("端到端延迟（ms，含设备执行与审计写入）")
     ax.set_ylabel("指令条数")
-    ax.set_title("图1  规则层端到端延迟分布\n（25 条标准指令 × 60 轮 = 1500 次调用，全程零大模型）",
+    ax.set_title("规则层端到端延迟分布\n（25 条标准指令 × 60 轮 = 1500 次调用，全程零大模型）",
                  fontsize=11)
     ax.legend(fontsize=9)
     ax.grid(alpha=0.25, axis="y")
@@ -113,7 +113,7 @@ def fig_per_input(d: dict) -> Path:
     ax.invert_yaxis()
     ax.set_xlabel("端到端延迟（ms）")
     top_name, top_v = items[0][0], items[0][1]
-    ax.set_title(f"图2  规则层命中指令的延迟对比（取最慢 {len(items)} 条）\n"
+    ax.set_title(f"规则层命中指令的延迟对比（取最慢 {len(items)} 条）\n"
                  f"最慢者为「{top_name}」{top_v['avg']:.3f}ms（多设备场景联动），"
                  f"仍远低于 100ms 设计要求",
                  fontsize=10.5)
@@ -141,7 +141,7 @@ def fig_prompt_vs_time(d: dict) -> Path:
     ax.set_xlabel("prompt 体积（token）")
     ax.set_ylabel("端到端耗时（ms）")
     ax.set_ylim(0, max(y) * 1.35)
-    ax.set_title("图3  慢环延迟与 prompt 体积的关系\n"
+    ax.set_title("慢环延迟与 prompt 体积的关系\n"
                  "prompt 扩大 33 倍，耗时未增加（输出长度固定）→ prompt 体积不是延迟变量",
                  fontsize=11)
     ax.grid(alpha=0.25)
@@ -174,7 +174,7 @@ def fig_output_vs_time(d: dict) -> Path:
                     xytext=(6, -13), fontsize=8.5)
     ax.set_xlabel("输出长度（completion token）")
     ax.set_ylabel("端到端耗时（ms）")
-    ax.set_title("图4  慢环延迟与输出长度的关系（核心结论）\n"
+    ax.set_title("慢环延迟与输出长度的关系（核心结论）\n"
                  "输出扩大 15 倍，耗时线性增长；拟合斜率约 1/15 秒每 token",
                  fontsize=11)
     ax.grid(alpha=0.25)
@@ -221,7 +221,7 @@ def fig_success_rate(d: dict) -> Path:
     for i, n in enumerate(short):
         axR.text(0.03, i, "需人工二次确认", va="center", fontsize=8, color="white")
 
-    fig.suptitle("图5  设备控制成功率分解与口径说明", fontsize=11.5, y=1.02)
+    fig.suptitle("设备控制成功率分解与口径说明", fontsize=11.5, y=1.02)
     return _save(fig, "fig5_success_rate.png")
 
 
@@ -246,7 +246,7 @@ def fig_test_coverage(counts: dict) -> Path:
                 va="center", fontsize=8.5)
     ax.set_xlabel("断言数")
     ax.set_xlim(0, max(vals) * 1.16)
-    ax.set_title(f"图6  回归测试断言分布（共 {total} 项，12 个脚本，全部离线可跑）",
+    ax.set_title(f"回归测试断言分布（共 {total} 项，12 个脚本，全部离线可跑）",
                  fontsize=11)
     ax.grid(alpha=0.25, axis="x")
     return _save(fig, "fig6_test_coverage.png")

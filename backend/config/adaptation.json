@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "note": "L5 自治配置：四道闸（参数包络 / 最大步长 / 最小间隔 / 当日预算）+ 冷启动 + 漂移降级。安全设备永不参与。",
+  "enabled": false,
+  "attributes": {
+    "temperature": {"min": 16, "max": 30, "max_delta": 2, "min_interval_seconds": 1800},
+    "humidity": {"min": 30, "max": 80, "max_delta": 10, "min_interval_seconds": 1800},
+    "fan_speed": {"max_delta": 1, "min_interval_seconds": 900},
+    "position": {"min": 0, "max": 100, "max_delta": 30, "min_interval_seconds": 1800},
+    "target": {"min": 30, "max": 80, "max_delta": 10, "min_interval_seconds": 1800}
+  },
+  "daily_budget": 60,
+  "cold_start_samples": 12,
+  "cold_start_mode": "shadow_then_probe",
+  "probe_step_ratio": 0.5,
+  "feedback_required": 12,
+  "water_heater_hours": [6, 7, 20, 21],
+  "comfort": {
+    "temperature_margin": 0.5,
+    "humidity_margin": 5
+  },
+  "drift": {
+    "window_hours": 24,
+    "correction_rate_max": 0.1,
+    "comfort_hit_drop_points": 10,
+    "degraded_ratio_max": 0.2
+  },
+  "safe_device_exclusions": ["lock", "gas_stove", "camera", "window"],
+  "priority_classes": ["ac", "humidifier", "dehumidifier", "water_heater", "robot_vacuum"],
+  "autonomy_levels": ["auto", "confirm", "suggest_only", "off"],
+  "autonomy_initial": "suggest_only"
+}

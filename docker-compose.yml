@@ -1,0 +1,43 @@
+# 灵犀 · 单服务编排（后端 + 前端静态托管，8000 端口）
+#
+# 起：
+#   cp .env.example .env    # 填 LLM_API_KEY 等
+#   docker compose up -d --build
+#   浏览器打开 http://localhost:8000
+#
+# 停：docker compose down（数据保留在 ./data）
+#
+# 说明：
+# - 只有一个服务。灵犀的感知/告警/日报都是进程内循环，不需要额外的
+#   MQTT/HA 容器；设备层是内建虚拟设备，接真实设备时再按需加适配器容器。
+# - 端口只绑回环可选：默认 "8000:8000" 便于手机在同一局域网演示；
+#   若要暴露到公网/异地，请改成 "127.0.0.1:8000:8000" 并用 Tailscale 之类
+#   的点对点网络接入（不要直接做端口转发）。
+services:
+  lingxi:
+    build: .
+    image: lingxi-app:latest
+    container_name: lingxi
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Shanghai
+      LINGXI_DATA_DIR: /app/data
+      # 断网演练：设为 "1" 强制不发起任何模型请求（走规则与结构化路径）
+      LLM_OFFLINE: "${LLM_OFFLINE:-}"
+    volumes:
+      # 运行时状态（习惯/经验/日报/自定义事件路由），删除容器不丢
+      - ./data:/app/data
+      # 配置热重载：改宿主上的 backend/config/*.json 后调 POST /api/config/reload 即生效
+      - ./backend/config:/app/backend/config:ro
+    restart: unless-stopped
+    # 内存上限：slim 镜像本身很轻，但 LLM 客户端 + 线程池失控时不要把宿主机拖垮
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

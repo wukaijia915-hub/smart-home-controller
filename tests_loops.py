@@ -367,5 +367,90 @@ missing = emitted_types - routed_types
 check("★ 内环发出的每种事件都有路由（否则告警只播报不联动）",
       not missing, f"无路由的事件类型: {missing}")
 
+print("\n== 6. 草稿→确认：条件句不立即执行，也不再生硬拒绝 ==")
+from backend.agent import HomeAgent
+from backend.capabilities import CapabilityRegistry
+from backend.drafts import DraftStore, confirm_draft
+
+dreg = DeviceRegistry()
+dcaps = CapabilityRegistry()
+dcaps.auto_pair(dreg.all())
+dagent = HomeAgent(dreg, capabilities=dcaps)
+
+res = dagent.decide("如果客厅没人了就把灯关掉")
+check("条件句不执行任何设备动作",
+      res["actions"] == [] and res["results"] == [], str(res["actions"]))
+check("条件句产出规则草稿（而不是生硬拒绝）",
+      bool(res.get("draft")) and res["draft"].get("kind") == "event_route"
+      and bool(res.get("draft_id")), str(res.get("draft")))
+_draft_payload = (res.get("draft") or {}).get("payload") or {}
+check("草稿匹配 no_person 事件",
+      "no_person" in _draft_payload.get("match", {}).get("event_types", []),
+      str(_draft_payload.get("match")))
+check("草稿动作是关灯",
+      any(a["command"] == "turn_off" for a in _draft_payload.get("actions", [])),
+      str(_draft_payload.get("actions")))
+check("草稿回复用将来时（不声称已执行）",
+      "尚未生效" in res["reply"] and "已关闭" not in res["reply"], res["reply"][:80])
+
+_store = DraftStore(ttl_seconds=600)
+_draft = _store.create(payload=_draft_payload, summary=_draft_payload.get("desc", ""))
+check("草稿箱可创建并按 id 取回", _draft is not None and _store.get(_draft.draft_id) is not None)
+
+_routes_file = Path(_TMP_DIR) / "custom_routes.json"
+_router = EventRouter(dreg, custom_path=_routes_file)
+_ok, _payload = confirm_draft(_store, _router, dreg, _draft.draft_id)
+check("确认后写入自定义路由（预置路由文件不动）",
+      _ok and _routes_file.exists(), str(_payload))
+check("草稿确认后即出箱（不可重复确认）", _store.get(_draft.draft_id) is None)
+
+_ev = _router.route({"type": "no_person", "source": "test",
+                     "payload": {"summary": "没人了"}})
+_ours = [a for a in _ev.actions if a.get("route_id") == _payload["route"]["id"]]
+check("新路由真的会被事件触发", _payload["route"]["id"] in _ev.matched_routes,
+      str(_ev.matched_routes))
+check("新路由的动作仍带回读证据",
+      bool(_ours) and any(a.get("status") in ("confirmed", "delivered") for a in _ours),
+      str(_ours))
+
+# 解析不出的条件句：仍然诚实拒绝，不猜
+res_bad = dagent.decide("如果天气好就出去散步")
+check("解析不出的条件句仍诚实拒绝（不瞎猜）",
+      res_bad["actions"] == [] and res_bad.get("draft") is None
+      and "条件触发" in res_bad["reply"], res_bad["reply"][:50])
+
+# 高危动作：草稿先出，确认时必须显式允许
+res_hr = dagent.decide("如果有人就解锁门锁")
+_hr_payload_in = (res_hr.get("draft") or {}).get("payload") or {}
+check("高危条件句也先出草稿、不执行",
+      bool(res_hr.get("draft")) and res_hr["actions"] == [], str(res_hr.get("draft")))
+check("草稿标注高危动作",
+      bool(_hr_payload_in.get("high_risk")), str(_hr_payload_in))
+
+_hr_store = DraftStore(ttl_seconds=600)
+_hr_draft = _hr_store.create(payload=_hr_payload_in, summary="高危草稿")
+_ok_hr, _hr_payload = confirm_draft(_hr_store, _router, dreg, _hr_draft.draft_id)
+check("未显式允许 → 拒绝创建高危自动规则",
+      (not _ok_hr) and _hr_payload.get("code") == "high_risk_requires_allow",
+      str(_hr_payload))
+check("拒绝后草稿仍在（可改后重试）", _hr_store.get(_hr_draft.draft_id) is not None)
+
+_ok_hr2, _hr_payload2 = confirm_draft(_hr_store, _router, dreg, _hr_draft.draft_id,
+                                      allow_high_risk=True)
+check("显式 allow_high_risk 后才落库，且动作被标注",
+      _ok_hr2 and any(a.get("allow_high_risk") for a in _hr_payload2["route"]["actions"]),
+      str(_hr_payload2))
+_ev_hr = _router.route({"type": "person_detected", "source": "test",
+                        "payload": {"summary": "有人"}})
+_hr_actions = [a for a in _ev_hr.actions
+               if a.get("route_id") == _hr_payload2["route"]["id"]]
+check("显式允许的高危自动规则真的执行（不再被 refused）",
+      bool(_hr_actions) and _hr_actions[0].get("status") != "refused", str(_hr_actions))
+
+_expire = DraftStore(ttl_seconds=0)
+_d = _expire.create(payload={"actions": []}, summary="expire")
+check("草稿 TTL 到期自动清理（不制造幽灵草稿）",
+      _expire.get(_d.draft_id) is None and _expire.stats()["pending"] == 0)
+
 print(f"\n结果: {PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

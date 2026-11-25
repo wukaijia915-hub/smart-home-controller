@@ -1,0 +1,16 @@
+# 构建上下文排除项：镜像里只该有代码与前端静态资源
+.git
+.github
+__pycache__
+*.py[cod]
+.venv
+venv
+.env
+data
+tests_*.py
+experiments
+docs
+ppt_build
+*.md
+.tmp_fetched
+.tools

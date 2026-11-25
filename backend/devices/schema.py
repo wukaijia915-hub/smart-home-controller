@@ -21,6 +21,8 @@ class DeviceCategory:
     CAMERA = "camera"
     SPEAKER = "speaker"
     GAS_STOVE = "gas_stove"
+    WATER_HEATER = "water_heater"
+    DEHUMIDIFIER = "dehumidifier"
 
 
 @dataclass

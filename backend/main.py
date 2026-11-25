@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from .agent import HomeAgent
 from .devices.registry import DeviceRegistry
 from .scenes import SCENES
 from .sensors import SensorSimulator
+from .version import APP_VERSION, version_info
 
 try:
     import edge_tts
@@ -73,17 +75,43 @@ simulator = SensorSimulator(registry)
 from .tools import tool_registry
 from .toolkit.guard import ManagerGuard
 tool_registry.build_from_devices(registry)
-tool_registry.bind_actuation_guard(ManagerGuard(agent.manager))
+# 单一执行入口：同一份 ManagerGuard 也被 /api/control、/api/scene、WS control
+# 与技能执行复用。原因是此前这些入口直接调 registry.control()，绕过了租约、
+# 版本校验与高危二次确认 —— 同一个洞在工具层修过一次（D22），其余入口还开着。
+manager_guard = ManagerGuard(agent.manager)
+tool_registry.bind_actuation_guard(manager_guard)
 
 # state_store 必须注入：否则事件路径改状态不递增版本号，租约版本会与真相源脱节
 event_router = EventRouter(registry, manager, state_store=agent.store)
 
+# ---- 草稿→确认（规则结构级二次确认）----
+# 与 StateStore.pending（动作级、10 秒）分开：草稿是"要不要创建这条规则"，
+# 10 分钟有效、不落盘（重启即丢，避免幽灵草稿复活）。
+from .drafts import draft_store
+
+_started_at = time.time()
+
 # ---- 感知层（多模态置信度融合 + 白盒情境参数） ----
 from .perception import PerceptionContext, PerceptionService, PresenceTracker
+from .perception.room_service import RoomService
 
 perception_service = PerceptionService()
 presence = PresenceTracker()          # 「在家时长」的真值来源，由 sensor_loop 喂入
 perception_state: dict = {}           # 最近一次感知结果（前端轮询）
+
+# ---- 房间服务：CSI 节点 → 房间四态 → 六路旁证 → 事件（v2.0） ----
+# 未启用（wifi_csi.enabled=false）时它只提供空摘要，感知层行为与旧版一致。
+room_service = RoomService(registry, agent.store,
+                           sensors_getter=lambda: simulator.values)
+
+# ---- L5 自治（v2.0）：偏好带 → 目标仲裁 → 四道闸 → 冷启动/漂移降级 ----
+# 默认 enabled=false：不配置就不自动调设备，符合"演示优先、安全默认"。
+from .adaptation import AdaptationService
+
+adaptation_service = AdaptationService(
+    registry, agent.store,
+    sensors_getter=lambda: simulator.values,
+    rooms_getter=lambda: room_service.summary())
 
 # ---- 内环告警（声明式阈值 → 结构化事件 → 事件路由） ----
 # 阈值在 config/alert_routes.json，联动方式在 config/event_routes.json。
@@ -123,15 +151,36 @@ def _run_daily_summary(window_hours: float = 24.0) -> dict:
         registry, agent.store, agent.llm, perception_state, window_hours=window_hours)
 
 
+def _presence_state(rooms: dict) -> str:
+    """把房间四态归并成一个聚合在场态（给感知上下文用）。
+
+    归并顺序是刻意的：present 优先（有正向证据），degraded 次之（不可推断），
+    只有**所有**房间都 empty_confident 才算 empty，其余一律 uncertain。
+    """
+    states = [str((r or {}).get("state", "")) for r in (rooms or {}).values()]
+    if not states:
+        return "uncertain"
+    if any(s == "present_confident" for s in states):
+        return "present"
+    if any(s == "degraded" for s in states):
+        return "degraded"
+    if all(s == "empty_confident" for s in states):
+        return "empty"
+    return "uncertain"
+
+
 def _perception_context() -> PerceptionContext:
     """从当前系统状态组装感知上下文。"""
     recent = agent.store.get_audit(limit=30)
+    rooms = room_service.summary()
     return PerceptionContext(
         sensors=simulator.values,
         recent_actions=recent,
         habit={"routine_deviation": 1.0},   # 无历史基线时取中性值，置信度会相应下调
         presence_minutes=presence.minutes,
         idle_minutes=presence.idle_minutes(),
+        rooms=rooms,
+        presence_state=_presence_state(rooms),
     )
 
 
@@ -160,7 +209,13 @@ async def lifespan(app: FastAPI):
     SENSOR_SECONDS = float(loops.get("sensor_seconds", 2.0))
     ALERT_SECONDS = float(loops.get("alert_seconds", 5.0))
     PERCEPTION_SECONDS = float(loops.get("perception_seconds", 15.0))
+    ROOM_SECONDS = float(loops.get("room_seconds", 5.0))
+    ADAPTATION_SECONDS = float(loops.get("adaptation_seconds", 60.0))
     SUGGESTION_COOLDOWN = float(loops.get("suggestion_cooldown_seconds", 300.0))
+
+    # CSI 接入：enabled=false 或未装 paho 时返回原因，不阻塞主服务
+    ingest = room_service.start_ingest()
+    print(f"[CSI] MQTT 接入：{'已启动' if ingest.get('started') else ingest.get('last_error', '未启动')}")
 
     # 传感器变化 → 广播
     async def sensor_loop():
@@ -206,6 +261,42 @@ async def lifespan(app: FastAPI):
                     _record_alert_experience(event, evaluation)
                 except Exception as e:
                     print(f"[内环告警] 路由失败 {event.get('type')}: {type(e).__name__}: {e}")
+
+    # 房间环：节点 sweep → 四态融合 → 六路旁证 → 状态变化事件。
+    # 关键：sweep 必须由定时循环驱动，不能等下一帧 —— 节点死了不会再有消息，
+    # 等消息就等于永远发现不了它掉线（见 node_registry.py）。
+    async def room_loop():
+        while True:
+            await asyncio.sleep(ROOM_SECONDS)
+            try:
+                result = await asyncio.to_thread(room_service.tick)
+            except Exception as e:
+                print(f"[房间环] 评估失败（不影响设备控制）: {type(e).__name__}: {e}")
+                continue
+            for event in result.get("events", []):
+                try:
+                    # 只有 empty_confident 才会产生 no_person；uncertain 永不触发
+                    await asyncio.to_thread(event_router.route, event)
+                except Exception as e:
+                    print(f"[房间环] 事件路由失败 {event.get('type')}: {type(e).__name__}: {e}")
+            try:
+                await manager.broadcast({"type": "rooms",
+                                         "rooms": result.get("rooms", {}),
+                                         "events": result.get("events", [])})
+            except Exception:
+                pass
+
+    # L5 自治环：默认 enabled=false，因此这里即使跑也只是"算建议、不动作"。
+    async def adaptation_loop():
+        while True:
+            await asyncio.sleep(ADAPTATION_SECONDS)
+            try:
+                result = await asyncio.to_thread(adaptation_service.tick)
+                if result.get("applied", {}).get("ok"):
+                    await manager.broadcast({"type": "adaptation",
+                                             "result": result.get("applied", {})})
+            except Exception as e:
+                print(f"[L5 自治] 评估失败（不影响设备控制）: {type(e).__name__}: {e}")
 
     def _record_alert_experience(event: dict, evaluation) -> None:
         """把环境联动记入经验库（category=active_alert）。
@@ -306,10 +397,15 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(sensor_loop())
     alert_task = asyncio.create_task(alert_loop())
     perception_task = asyncio.create_task(perception_loop())
+    room_task = asyncio.create_task(room_loop())
+    adaptation_task = asyncio.create_task(adaptation_loop())
     yield
     task.cancel()
     alert_task.cancel()
     perception_task.cancel()
+    room_task.cancel()
+    adaptation_task.cancel()
+    room_service.stop_ingest()
     # 关闭前补一次落盘：习惯数据改为延迟写入后，正常退出时不能丢最后几秒的计数
     try:
         habits_mod.habits.flush()
@@ -317,7 +413,7 @@ async def lifespan(app: FastAPI):
         print(f"[记忆·习惯] 退出落盘失败: {type(e).__name__}: {e}")
 
 
-app = FastAPI(title="灵犀 · 门控式大模型家居中枢", lifespan=lifespan)
+app = FastAPI(title="犀鉴 · 基于 Wi-Fi CSI 的隐私优先家庭感知与可信自适应系统", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -383,13 +479,24 @@ async def api_events_route(body: dict):
 
 @app.post("/api/scene")
 async def api_scene(body: dict):
+    """一键应用场景。
+
+    注意：场景里的**每一条**设备动作都走 `ManagerGuard`，与对话/工具同一条护栏链。
+    此前这里直接 `registry.control()`，等于给场景留了一条绕过租约与审计的旁路。
+    """
     scene = body.get("scene", "")
     if scene not in SCENES:
         return JSONResponse({"ok": False, "error": f"未知场景: {scene}"}, status_code=400)
-    results = [registry.control(a["device_id"], a["command"], a.get("params", {}))
-               for a in SCENES[scene]["actions"]]
+    results = await asyncio.to_thread(_apply_scene_actions, scene)
     await manager.broadcast({"type": "scene", "scene": scene, "desc": SCENES[scene]["desc"]})
-    return {"ok": True, "results": results}
+    return {"ok": True, "results": results,
+            "requires_confirmation": any(r.get("requires_confirmation") for r in results)}
+
+
+def _apply_scene_actions(scene: str) -> list[dict]:
+    """场景动作串行执行（同一设备的动作顺序不能颠倒，回读证据才连贯）。"""
+    return [manager_guard.actuate(a["device_id"], a["command"], a.get("params", {}))
+            for a in SCENES[scene]["actions"]]
 
 
 @app.post("/api/chat")
@@ -416,8 +523,15 @@ async def api_confirm(body: dict):
 
 @app.post("/api/control")
 async def api_control(body: dict):
-    """开放接入 SDK 示例：外部直接控制设备。"""
-    result = registry.control(body.get("device_id", ""), body.get("command", ""), body.get("params", {}))
+    """开放接入 SDK：外部直接控制设备。
+
+    **不再直连 registry.control()**：走 ManagerGuard，于是与对话路径共享
+    参数包络 / 租约 / 版本校验 / 高危二次确认 / 回读证据 / 审计。
+    高危命令会返回 `requires_confirmation=True` 与 pending_id，需再调 /api/confirm。
+    """
+    result = await asyncio.to_thread(
+        manager_guard.actuate,
+        body.get("device_id", ""), body.get("command", ""), body.get("params", {}))
     return result
 
 
@@ -445,6 +559,17 @@ async def api_config_reload():
     SCENES = load_scenes()
     # 重新加载传感器配置
     simulator.config = cfg.get("environment", {})
+    # 配置缓存与自定义路由也要跟着重载，否则"改了 JSON 却要等 10s/重启"。
+    from .devices.registry import invalidate_readback_settings
+    from .toolkit.scoping import invalidate_scope_cache
+    from .verification.claim_checker import invalidate_claim_cache
+    invalidate_readback_settings()
+    invalidate_scope_cache()
+    invalidate_claim_cache()
+    draft_store.reload_config()
+    event_router.load()
+    room_service.reload_config()
+    adaptation_service.reload_config()
     return {"ok": True, "devices": len(cfg.get("devices", [])), "scenes": len(cfg.get("scenes", {}))}
 
 
@@ -535,6 +660,8 @@ async def api_metrics_api():
     return {"ok": True, "api": api_log_mod.api_log.stats(),
             "rate_limit": rate_limit_mod.limiter.stats(),
             "perception": perception_service.status(),
+            "rooms": room_service.summary(),
+            "adaptation": adaptation_service.health(),
             "alerts": alert_evaluator.stats(),
             "store": agent.store.snapshot()}
 
@@ -651,16 +778,250 @@ async def api_schedule_toggle(task_id: str, body: dict):
     return {"ok": ok}
 
 
-# ---------- 标准化工具注册表 ----------
-@app.get("/api/tools")
-async def api_tools_list():
-    """列出所有已注册工具（含 schema）。"""
-    from .tools import tool_registry
+# ---------- 草稿 → 确认（对话建规则） ----------
+def _draft_high_risk(actions: list) -> list[str]:
+    from .drafts import draft_high_risk
+    return draft_high_risk(actions, registry)
+
+
+def _confirm_draft(draft_id: str, allow_high_risk: bool = False) -> tuple[bool, dict]:
+    """REST 与 WS 共用这一个确认函数（不变式只有一份，见 backend/drafts.py）。"""
+    from .drafts import confirm_draft
+    return confirm_draft(draft_store, event_router, registry, draft_id, allow_high_risk)
+
+
+@app.get("/api/drafts")
+async def api_drafts(session: str = ""):
+    """列出待确认的规则草稿（草稿不落盘，进程重启即丢）。"""
+    return {"ok": True, "drafts": draft_store.list(session or None),
+            "stats": draft_store.stats()}
+
+
+@app.get("/api/drafts/{draft_id}")
+async def api_draft_get(draft_id: str):
+    draft = draft_store.get(draft_id)
+    if draft is None:
+        return JSONResponse({"ok": False, "error": "草稿不存在或已过期"}, status_code=404)
+    return {"ok": True, "draft": draft.to_dict(),
+            "high_risk": _draft_high_risk((draft.payload or {}).get("actions") or [])}
+
+
+@app.post("/api/drafts/{draft_id}/confirm")
+async def api_draft_confirm(draft_id: str, body: dict | None = None):
+    """确认草稿 → 写入自定义事件路由（此后才生效）。
+
+    body 可选 `allow_high_risk: true`：草稿含高危动作时必须显式给出。
+    """
+    body = body or {}
+    ok, payload = _confirm_draft(draft_id, bool(body.get("allow_high_risk", False)))
+    if not ok:
+        status = 404 if payload.get("code") == "draft_not_found" else 400
+        return JSONResponse({"ok": False, **payload}, status_code=status)
+    return {"ok": True, **payload}
+
+
+@app.post("/api/drafts/{draft_id}/cancel")
+async def api_draft_cancel(draft_id: str):
+    ok = draft_store.cancel(draft_id)
+    return {"ok": ok, **({} if ok else {"error": "草稿不存在或已过期"})}
+
+
+@app.get("/api/event-routes")
+async def api_event_routes():
+    """当前生效的事件路由：预置（只读）+ 用户创建（可删）。"""
+    event_router.load()
     return {
         "ok": True,
-        "total": len(tool_registry.list_tools()),
-        "tools": [t.to_dict() for t in tool_registry.list_tools()],
-        "schemas": tool_registry.list_schemas(),
+        "base": [{"id": r.get("id"), "desc": r.get("desc", ""), "editable": False}
+                 for r in event_router.list_base()],
+        "custom": [{**r, "editable": True} for r in event_router.list_custom()],
+    }
+
+
+@app.delete("/api/event-routes/{route_id}")
+async def api_event_route_delete(route_id: str):
+    ok = event_router.remove_route(route_id)
+    if not ok:
+        return JSONResponse(
+            {"ok": False, "error": "只允许删除用户创建的规则（预置路由请改 config/event_routes.json）"},
+            status_code=404)
+    return {"ok": True, "removed": route_id}
+
+
+# ---------- 存活探针与版本 ----------
+def _data_dir_writable() -> bool:
+    import os
+    from .config_loader import data_dir
+    try:
+        d = data_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        return os.access(d, os.W_OK)
+    except Exception:
+        return False
+
+
+def _scheduler_ready() -> bool:
+    try:
+        from .scheduler import list_internal_jobs
+        list_internal_jobs()
+        return True
+    except Exception:
+        return False
+
+
+@app.get("/healthz")
+async def healthz():
+    """**无认证**存活探针（容器 healthcheck 用）。
+
+    为什么单独一个无认证端点：Docker 的 healthcheck 跑在容器内、不带登录态。
+    对照项目 Aether 的经验是，`restart: unless-stopped` 只能救"进程退出"，
+    救不了"进程活着但事件循环冻结"——灵犀把所有后台循环挂在一个 loop 上，
+    同一个风险存在，所以必须有一个能被容器直接打到的探针。
+
+    这里只返回是否活着与极少量状态，不泄露设备/家庭信息。
+    """
+    return {
+        "ok": True,
+        "service": "lingxi-smart-home",
+        "version": APP_VERSION,
+        "uptime_s": round(time.time() - _started_at, 1),
+        "checks": {
+            "data_dir_writable": _data_dir_writable(),
+            "llm_configured": bool(getattr(agent.llm, "available", False)),
+            "scheduler": _scheduler_ready(),
+        },
+    }
+
+
+@app.get("/api/health")
+async def api_health():
+    """诊断用健康信息（无敏感字段，供运维页/诊断包引用）。"""
+    return {
+        "ok": True,
+        **version_info(),
+        "uptime_s": round(time.time() - _started_at, 1),
+        "state_version": agent.store.version,
+        "devices": len(registry.all()),
+        "tools": len(tool_registry.list_tools()),
+        "drafts": draft_store.stats(),
+        "llm": agent.llm.get_status() if hasattr(agent.llm, "get_status") else {},
+    }
+
+
+# ---------- 信任层：六段链 / 撤销 ----------
+@app.get("/api/trust/recent")
+async def api_trust_recent(limit: int = 20):
+    """最近决策摘要 + 可撤销动作列表（前端信任面板的数据源）。"""
+    from .trust import explain_recent, undo_store
+    return {"ok": True,
+            "decisions": explain_recent(agent.store, limit=limit),
+            "undoable": undo_store.recent(limit=limit),
+            "stats": {"decisions": len(agent.store.decisions),
+                      "audit": len(agent.store.audit_log)}}
+
+
+@app.get("/api/trust/undo/{action_id}")
+async def api_trust_undo_check(action_id: str):
+    """撤销前置检查：能否撤销、原因、剩余秒数、将下发的逆动作。"""
+    from .trust import can_undo
+    chk = can_undo(action_id, registry)
+    return {"ok": bool(chk.get("ok")), **chk}
+
+
+@app.post("/api/trust/undo/{action_id}")
+async def api_trust_undo(action_id: str):
+    """执行撤销：走 execution.execute_plan(source="undo")，不是直连设备。"""
+    from .trust import apply_undo
+    result = await asyncio.to_thread(apply_undo, action_id,
+                                     registry=registry, store=agent.store)
+    if not result.get("ok"):
+        return JSONResponse({"ok": False, **result}, status_code=400)
+    return {"ok": True, **result}
+
+
+@app.get("/api/trust/{decision_id}")
+async def api_trust_detail(decision_id: str):
+    """一条决策的六段链 + 失败归因；滚出缓冲时 404 并说明原因。"""
+    from .trust import explain
+    detail = explain(agent.store, decision_id)
+    if not detail.get("ok"):
+        return JSONResponse(detail, status_code=404)
+    return detail
+
+
+# ---------- L5 自治（v2.0） ----------
+@app.get("/api/adaptation")
+async def api_adaptation():
+    """偏好带、目标提议、四道闸结果、自治等级与冷启动状态。"""
+    return {"ok": True, **adaptation_service.status()}
+
+
+@app.get("/api/adaptation/health")
+async def api_adaptation_health():
+    """自治健康：等级、模式、纠正率/自动执行占比/感知降级比例与阈值。"""
+    return {"ok": True, **adaptation_service.health()}
+
+
+@app.post("/api/adaptation/tick")
+async def api_adaptation_tick(body: dict | None = None):
+    """手动推进一轮 L5 评估（演示用；enabled=false 时只出建议）。"""
+    now = (body or {}).get("now")
+    result = await asyncio.to_thread(adaptation_service.tick, now)
+    return {"ok": True, **result}
+
+
+@app.post("/api/adaptation/{proposal_id}/accept")
+async def api_adaptation_accept(proposal_id: str):
+    """接受一条建议（走 Manager/租约链执行，不直连设备）。"""
+    result = await asyncio.to_thread(adaptation_service.accept, proposal_id)
+    return result
+
+
+@app.post("/api/adaptation/{proposal_id}/reject")
+async def api_adaptation_reject(proposal_id: str):
+    """否决一条建议：写入训练信号（纠正率），不执行。"""
+    return adaptation_service.reject(proposal_id)
+
+
+# ---------- 标准化工具注册表 ----------
+@app.get("/api/tools")
+async def api_tools_list(intent: str = ""):
+    """列出已注册工具（含 schema）。
+
+    `?intent=卧室灯` 可按意图裁剪（高危命令默认不可见）。不传 intent 时返回全量，
+    保持旧调用方兼容 —— 全量与裁剪的区别会体现在 `scope` 字段里。
+    """
+    from .tools import tool_registry
+    tools, scope = tool_registry.list_tools_scoped(intent)
+    return {
+        "ok": True,
+        "total": len(tools),
+        "all_total": len(tool_registry.list_tools()),
+        "scope": scope,
+        "tools": [t.to_dict() for t in tools],
+        "schemas": [t.to_schema() for t in tools],
+    }
+
+
+@app.get("/api/tools/scope")
+async def api_tools_scope(intent: str = ""):
+    """演示/复核用：一句话会把设备清单与工具集裁到多少。
+
+    答辩可直接跑：
+        /api/tools/scope?intent=卧室太亮    → 17→3 台设备、64→12 个工具
+        /api/tools/scope?intent=解锁门锁    → 高危命令因显式提到"解锁"才出现
+    """
+    from .toolkit.scoping import describe_scope, select_devices
+    from .tools import tool_registry
+    tools, tools_meta = tool_registry.list_tools_scoped(intent)
+    _, devices_meta = select_devices(intent, registry.all())
+    return {
+        "ok": True,
+        "intent": intent,
+        "devices": devices_meta,
+        "tools": tools_meta,
+        "summary": describe_scope(devices_meta),
+        "tool_names": [t.name for t in tools],
     }
 
 
@@ -699,10 +1060,14 @@ async def api_skills_create(body: dict):
 
 @app.post("/api/skills/{skill_id}/execute")
 async def api_skills_execute(skill_id: str):
-    """手动执行技能。"""
+    """手动执行技能。
+
+    技能内的动作交给 `manager_guard.actuate` 逐条执行（与对话/工具同一条护栏链），
+    技能层自身仍保留"高危命令不得批量执行"的拒绝 —— 两道闸互不替代。
+    """
     from .skills import skill_manager
-    # 设备状态变更已由 registry.on_change 回调自动广播，此处无需重复广播
-    return skill_manager.execute(skill_id, registry)
+    return await asyncio.to_thread(skill_manager.execute, skill_id, registry,
+                                   manager_guard.actuate)
 
 
 @app.delete("/api/skills/{skill_id}")
@@ -814,6 +1179,49 @@ async def api_perception_observe(body: dict):
     )
     result = perception_service.perceive(ctx)
     return {"ok": True, **result.to_dict()}
+
+
+# ---------- 房间四态 / CSI 接入（v2.0） ----------
+@app.get("/api/rooms")
+async def api_rooms():
+    """全部房间的四态、置信度、证据来源与节点在线情况。"""
+    return {"ok": True, "summary": room_service.summary(), **room_service.status()}
+
+
+@app.get("/api/rooms/{room_id}/timeline")
+async def api_room_timeline(room_id: str, limit: int = 50):
+    """房间状态变化时间线（只在状态变化时追加，不含原始 CSI）。"""
+    return {"ok": True, "room_id": room_id,
+            "timeline": room_service.timeline_recent(room_id, limit=limit)}
+
+
+@app.get("/api/csi/status")
+async def api_csi_status():
+    """CSI 接入状态：enabled / paho / MQTT 连接 / 节点表 / 统计。"""
+    return {"ok": True, **room_service.status()}
+
+
+@app.post("/api/rooms/tick")
+async def api_rooms_tick(body: dict | None = None):
+    """手动推进一轮房间评估（演示/测试用，不必等 5 秒循环）。"""
+    now = (body or {}).get("now")
+    result = await asyncio.to_thread(room_service.tick, now)
+    for event in result.get("events", []):
+        await asyncio.to_thread(event_router.route, event)
+    return {"ok": True, **result}
+
+
+@app.post("/api/csi/replay")
+async def api_csi_replay(body: dict):
+    """回放节点事件（无硬件演示）：body.records = [{node_id,state,received_at}]。
+
+    回放产生的事件与实时路径走同一个 EventRouter（no_person → 离家节能）。
+    """
+    records = body.get("records") or []
+    result = await asyncio.to_thread(room_service.replay, records)
+    for event in result.get("events", []):
+        await asyncio.to_thread(event_router.route, event)
+    return {"ok": True, **result}
 
 
 # ---------- MCP 协议接入 ----------
@@ -974,6 +1382,11 @@ async def websocket_endpoint(ws: WebSocket):
                     "reply": result["reply"],
                     "digital_human": result["digital_human"],
                     "actions": result["actions"],
+                    "results": result.get("results", []),
+                    "verification": result.get("verification", {}),
+                    "claim_issues": result.get("claim_issues", []),
+                    "scope": result.get("scope", {}),
+                    "draft": result.get("draft"),
                     "decision_trace": result.get("decision_trace", []),
                     "requires_confirmation": result.get("requires_confirmation", False),
                     "pending_id": result.get("pending_id", ""),
@@ -983,15 +1396,22 @@ async def websocket_endpoint(ws: WebSocket):
                 pending_id = msg.get("pending_id", "")
                 result = agent.confirm(pending_id)
                 await ws.send_text(json.dumps({"type": "confirm_result", "result": result}, ensure_ascii=False))
+            elif mtype == "confirm_draft":
+                # 草稿确认与 REST 共用 _confirm_draft：不变式只有一份
+                ok, payload = _confirm_draft(msg.get("draft_id", ""),
+                                             bool(msg.get("allow_high_risk", False)))
+                await ws.send_text(json.dumps(
+                    {"type": "draft_confirm_result", "ok": ok, **payload}, ensure_ascii=False))
             elif mtype == "scene":
                 scene = msg.get("scene", "")
                 if scene in SCENES:
-                    for a in SCENES[scene]["actions"]:
-                        registry.control(a["device_id"], a["command"], a.get("params", {}))
+                    await asyncio.to_thread(_apply_scene_actions, scene)
                     await ws.send_text(json.dumps({"type": "scene", "scene": scene,
                                                    "desc": SCENES[scene]["desc"]}, ensure_ascii=False))
             elif mtype == "control":
-                result = registry.control(msg.get("device_id", ""), msg.get("command", ""), msg.get("params", {}))
+                result = await asyncio.to_thread(
+                    manager_guard.actuate, msg.get("device_id", ""),
+                    msg.get("command", ""), msg.get("params", {}))
                 await ws.send_text(json.dumps({"type": "control_result", "result": result}, ensure_ascii=False))
             elif mtype == "edge":
                 registry.set_state(msg.get("device_id", ""), msg.get("state", "offline"))

@@ -1,13 +1,20 @@
 {
-  "version": "1.0",
-  "description": "灵犀智能家居环境传感器仿真配置。修改此文件可调整环境参数、波动范围、联动规则。",
+  "version": "1.1",
+  "description": "犀鉴家庭环境与旁证传感器仿真配置。值为仿真量（非实测）；接真实 PIR/插座/门磁后只换数据来源，不改判定规则。",
   "sensors": {
     "temp_indoor": {"initial": 25, "min": 16, "max": 35, "fluctuation": 0.3, "label": "室内温度", "unit": "℃"},
     "humidity": {"initial": 50, "min": 20, "max": 90, "fluctuation": 1.0, "label": "室内湿度", "unit": "%"},
     "light_level": {"initial": 400, "min": 0, "max": 1000, "fluctuation": 20, "label": "光照强度", "unit": "lux"},
     "air_quality": {"initial": 85, "min": 20, "max": 100, "fluctuation": 2.0, "label": "空气质量", "unit": ""},
-    "motion_living": {"initial": true, "label": "客厅人员", "unit": ""},
-    "motion_bedroom": {"initial": false, "label": "卧室人员", "unit": ""}
+    "motion_living": {"initial": true, "label": "客厅人员（仿真）", "unit": ""},
+    "motion_bedroom": {"initial": false, "label": "卧室人员（仿真）", "unit": ""},
+    "pir_living": {"initial": true, "label": "客厅 PIR（旁证·仿真）", "unit": ""},
+    "pir_bedroom": {"initial": false, "label": "卧室 PIR（旁证·仿真）", "unit": ""},
+    "pir_bathroom": {"initial": false, "label": "卫浴 PIR（旁证·仿真）", "unit": ""},
+    "plug_power_living": {"initial": 35, "min": 0, "max": 300, "label": "客厅插座功率（旁证·仿真）", "unit": "W"},
+    "plug_power_bedroom": {"initial": 5, "min": 0, "max": 300, "label": "卧室插座功率（旁证·仿真）", "unit": "W"},
+    "plug_power_bathroom": {"initial": 2, "min": 0, "max": 300, "label": "卫浴插座功率（旁证·仿真）", "unit": "W"},
+    "door_entry_open": {"initial": false, "label": "入户门磁（旁证·仿真）", "unit": ""}
   },
   "day_night_cycle": {
     "enabled": true,

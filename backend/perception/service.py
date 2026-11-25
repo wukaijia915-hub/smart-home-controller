@@ -89,7 +89,7 @@ class PerceptionService:
             now=ctx.now,
         ))
 
-        suggestion, basis = self._build_suggestion(readings, gate_result, situation)
+        suggestion, basis = self._build_suggestion(ctx, readings, gate_result, situation)
 
         return PerceptionResult(
             readings=readings,
@@ -103,7 +103,7 @@ class PerceptionService:
 
     # ---------- 建议生成（只出问句） ----------
     @staticmethod
-    def _build_suggestion(readings: list, gate_result,
+    def _build_suggestion(ctx: PerceptionContext, readings: list, gate_result,
                           situation) -> tuple[Optional[str], str]:
         # 1) 紧急事件交由事件路由处理，感知层不重复
         for r in readings:
@@ -113,8 +113,13 @@ class PerceptionService:
         region = situation.region
         region_label = situation.region_label
 
-        # 2) 家中无人：说了也没人听
+        # 2) 家中无人：说了也没人听。
+        #    但该结论只有在房间态**确实**判为 empty 时才允许；degraded/uncertain
+        #    一律不推断无人（申报书：不确定是刻意输出，不硬判）。
         if region == "away":
+            if ctx.rooms and ctx.presence_state in ("degraded", "uncertain"):
+                return None, (f"房间聚合状态为 {ctx.presence_state}，"
+                              f"不据此推断无人（需旁证一致）")
             return None, f"{region_label}，无需播报"
 
         # 3) 情境异常优先于氛围判断 —— 它有可指认的真值来源，比融合出的氛围更硬

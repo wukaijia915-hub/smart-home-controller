@@ -344,6 +344,58 @@ check("确认后高危动作可执行（挂起不是死路）",
       _conf.get("ok") is True and _tool_reg.get("lock_entry_01").get("locked") is False,
       str(_conf.get("error", _conf.get("status"))))
 
+# ---------------------------------------------------------------- 8. 按意图裁剪
+print("\n== 8. 工具/设备清单按意图裁剪（工具越多，选择精度越低）==")
+from backend.toolkit.scoping import select_devices, select_tools, detect_signal
+
+_all_devices = registry.all()
+_picked, _meta = select_devices("卧室太亮", _all_devices)
+check("卧室信号：只留卧室设备", len(_picked) == 4 and {d.room for d in _picked} == {"卧室"},
+      f"{len(_picked)} 台")
+
+_picked2, _meta2 = select_devices("把屋子氛围弄温馨一点", _all_devices)
+check("★ 无信号不裁剪：模糊指令保留全量视野",
+      len(_picked2) == len(_all_devices) and not _meta2["narrowed"],
+      f"{len(_picked2)} 台 narrowed={_meta2['narrowed']}")
+
+_picked3, _ = select_devices("打开客厅吊灯", _all_devices)
+check("设备名精确命中：只留客厅吊灯",
+      [d.device_id for d in _picked3] == ["light_living_01"],
+      str([d.device_id for d in _picked3]))
+
+_tools_all = _tr.list_tools()
+_dev_map = {d.device_id: d for d in _all_devices}
+_scoped, _tmeta = select_tools("门锁", _tools_all, _dev_map)
+check("★ 高危命令默认不可见（门锁回合不出现 unlock）",
+      not any(t.command == "unlock" for t in _scoped) and _tmeta["high_risk_hidden"] >= 1,
+      f"kept={[t.name for t in _scoped]} hidden={_tmeta['high_risk_hidden']}")
+
+_scoped_hr, _ = select_tools("解锁门锁", _tools_all, _dev_map)
+check("显式提到「解锁」才放出高危命令",
+      any(t.command == "unlock" for t in _scoped_hr),
+      str([t.name for t in _scoped_hr]))
+
+_scoped_no, _tmeta_no = select_tools("把屋子氛围弄温馨一点", _tools_all, _dev_map)
+check("无信号时只隐藏高危命令，不裁设备",
+      len(_scoped_no) == len(_tools_all) - _tmeta_no["high_risk_hidden"]
+      and _tmeta_no["high_risk_hidden"] == 4,
+      f"{len(_scoped_no)}/{len(_tools_all)} hidden={_tmeta_no['high_risk_hidden']}")
+
+_bedroom_tools, _ = _tr.list_tools_scoped("卧室")
+check("工具注册表按意图裁剪：卧室 → 16 个工具（4 台设备）",
+      len(_bedroom_tools) == 16, f"{len(_bedroom_tools)} 个")
+
+_scope_meta = {}
+_prompt = root._build_system_prompt("卧室太亮", _scope_meta)
+check("慢环 prompt 只含裁剪后的设备行 + 显式告知模型",
+      _prompt.count("\n- ") == 4 and "本轮只列出" in _prompt,
+      f"{_prompt.count('- ')} 行")
+check("裁剪结果写回 scope（供 trace / 审计复核）", _scope_meta.get("narrowed") is True, str(_scope_meta))
+
+_prompt_all = root._build_system_prompt("把屋子氛围弄温馨一点", {})
+check("模糊指令的 prompt 仍是全量设备",
+      _prompt_all.count("\n- ") == len(_all_devices), f"{_prompt_all.count('- ')} 行")
+
 # ---------------------------------------------------------------- 汇总
 print()
 print("=" * 60)

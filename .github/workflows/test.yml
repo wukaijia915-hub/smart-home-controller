@@ -1,0 +1,30 @@
+name: test
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  # 回归门禁：13 个脚本 + 语法编译检查。
+  # 与本地 `python run_tests.py` 完全同一条命令 —— 本地绿 = CI 绿，
+  # 不再出现"开发机靠真实 .env 侥幸通过、CI 干净环境挂掉"的差异。
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compile check
+        run: python -m compileall -q backend
+
+      - name: Run regression gate
+        run: python run_tests.py --verbose

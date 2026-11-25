@@ -220,6 +220,34 @@
         "flame_level": {"value": 0, "type": "number", "min": 0, "max": 5, "label": "火力档位"}
       },
       "commands": ["turn_on", "turn_off", "set_flame_level"]
+    },
+    {
+      "device_id": "water_heater_bathroom_01",
+      "name": "卫浴热水器",
+      "category": "water_heater",
+      "room": "卫浴",
+      "protocol": "wifi",
+      "attributes": {
+        "on": {"value": false, "type": "bool", "label": "开关"},
+        "temperature": {"value": 45, "type": "number", "min": 35, "max": 75, "unit": "℃", "label": "目标水温"},
+        "mode": {"value": "eco", "type": "enum", "options": ["eco", "fast", "smart"], "label": "模式"},
+        "power": {"value": 0, "type": "number", "min": 0, "max": 3000, "unit": "W", "label": "当前功率"}
+      },
+      "commands": ["turn_on", "turn_off", "set_temperature", "set_mode"]
+    },
+    {
+      "device_id": "dehumidifier_bedroom_01",
+      "name": "卧室除湿机",
+      "category": "dehumidifier",
+      "room": "卧室",
+      "protocol": "wifi",
+      "attributes": {
+        "on": {"value": false, "type": "bool", "label": "开关"},
+        "humidity": {"value": 55, "type": "number", "min": 30, "max": 90, "unit": "%", "label": "当前湿度"},
+        "target": {"value": 50, "type": "number", "min": 30, "max": 80, "unit": "%", "label": "目标湿度"},
+        "mode": {"value": "auto", "type": "enum", "options": ["auto", "dry", "quiet"], "label": "模式"}
+      },
+      "commands": ["turn_on", "turn_off", "set_target", "set_mode"]
     }
   ]
 }

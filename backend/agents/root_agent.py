@@ -97,10 +97,14 @@ class RootAgent:
             )
 
         # 1b) 条件指令保护：不能把「如果客厅没人就把灯关掉」当成「立即关灯」执行。
-        #    这类请求要的是**创建自动化规则**，而不是立刻动作。当前没有从对话创建
-        #    事件路由的能力（阶段4 才做），所以诚实拒绝并指路，而不是静默执行一条
-        #    用户没要求的动作。设备正则会命中"关灯"，必须在它之前拦下。
+        #    这类请求要的是**创建自动化规则**，而不是立刻动作。
+        #    现在的做法（v1.1）：先尝试解析成**规则草稿**（草稿→确认两段式，见
+        #    backend/drafts.py），草稿不生效、不执行；解析不出来才回落到诚实拒绝。
+        #    拒绝不丢，只是从「做不到」升级成「先给你看草稿再决定」。
         if _is_conditional(cleaned):
+            draft_plan = self._draft_plan(cleaned)
+            if draft_plan is not None:
+                return draft_plan
             return TaskPlan(
                 is_command=False,
                 source="fallback",
@@ -199,6 +203,8 @@ class RootAgent:
         否则优先客厅；房间内没有匹配设备时退回全部匹配设备
         （例如门锁在玄关，不属于客厅或卧室，此时仍应命中）。
         """
+        if self.capabilities is None:
+            return None
         cap = self.capabilities.resolve(text)
         if not cap or not cap.get("command"):
             return None
@@ -220,6 +226,102 @@ class RootAgent:
         reply = f"已为您{desc}（{names}）。" if desc else f"已为您调整{names}。"
         return TaskPlan(is_command=True, source="rule", reply=reply,
                         sub_tasks=sub_tasks, state_version=self.store.version)
+
+    # ---------- 条件句 → 规则草稿（草稿→确认两段式） ----------
+    def _device_plan(self, text: str) -> Optional[TaskPlan]:
+        """把设备正则解析结果包成 TaskPlan（供草稿动作解析复用漏斗⑤）。"""
+        sub_tasks, reply = self._parse_device_command(text)
+        if not sub_tasks:
+            return None
+        return TaskPlan(is_command=True, source="rule", reply=reply,
+                        sub_tasks=sub_tasks, state_version=self.store.version)
+
+    def _match_draft_condition(self, text: str, cfg: dict) -> Optional[dict]:
+        """按 config/draft_rules.json 的条件词表匹配。纯字符串包含，0ms。"""
+        for cond in cfg.get("conditions") or []:
+            if any(str(k) and str(k) in text for k in (cond.get("keywords") or [])):
+                return cond
+        return None
+
+    @staticmethod
+    def _split_condition_action(text: str, cfg: dict) -> str:
+        """取「条件词」之后的那半句作动作描述。
+
+        只按声明式的连接词切分（就/则/便/的话…），不做中文句法分析 ——
+        切错的代价是"草稿生成失败，回落到诚实拒绝"，不会误执行。
+        """
+        for kw in cfg.get("action_split_keywords") or ["就"]:
+            idx = text.find(kw)
+            if idx <= 0:
+                continue
+            candidate = text[idx + len(kw):].strip(" ，,。.！!；;、")
+            if candidate:
+                return candidate
+        return ""
+
+    def _draft_plan(self, text: str) -> Optional[TaskPlan]:
+        """把条件句解析成「规则草稿」，**不执行、不落库**。
+
+        解析链：条件词表（配置）→ 切出动作半句 → 复用能力契约/设备正则解析动作。
+        任何一步不成立就返回 None，由调用方回落到原来的诚实拒绝 —— 宁可说
+        "我不会立刻执行"，也不猜用户想要什么联动。
+
+        草稿的 payload 就是最终要写进 event_routes 的路由形状（match + actions），
+        确认时由 DraftStore → EventRouter.add_route() 原样落库。两段式的好处：
+        - 用户看得见"到底会创建什么"，而不是模型在后台偷偷写一条规则；
+        - 高危动作在确认时还能再拦一次（见 main.py 的 confirm 端点）。
+        """
+        from ..config_loader import load_draft_rules
+        from ..lease import LeaseValidator
+
+        cfg = load_draft_rules() or {}
+        condition = self._match_draft_condition(text, cfg)
+        if condition is None:
+            return None
+        action_text = self._split_condition_action(text, cfg)
+        if not action_text:
+            return None
+
+        action_plan = self._capability_plan(action_text) or self._device_plan(action_text)
+        if action_plan is None or not action_plan.sub_tasks:
+            return None
+
+        actions = [{"type": "device", "device_id": st.device_id,
+                    "command": st.command, "params": dict(st.params)}
+                   for st in action_plan.sub_tasks]
+        high_risk = [f"{st.category}.{st.command}" for st in action_plan.sub_tasks
+                     if LeaseValidator.is_high_risk(st.category, st.command)]
+
+        # 动作描述要改成"将来时"。直接引用 action_plan.reply 会得到「已关闭…」这种
+        # 完成态句子，而此刻**什么都没执行** —— 不仅误导用户，还会被输出层声明校验
+        # 判成"声称做了没做的事"（我们自己的草稿文案把自己送进了 claim 校验）。
+        action_phrase = re.sub(r"^已(?:经)?(?:为您)?", "", (action_plan.reply or "").rstrip("。 "))
+        action_phrase = action_phrase or "执行相应设备动作"
+
+        match: dict = {"event_types": [condition.get("event_type", "")]}
+        if condition.get("match_payload"):
+            match["payload_equals"] = dict(condition["match_payload"])
+        if condition.get("severity_at_least"):
+            match["severity_at_least"] = condition["severity_at_least"]
+
+        draft = {
+            "kind": "event_route",
+            "condition_id": condition.get("id", ""),
+            "condition_summary": condition.get("summary", ""),
+            "match": match,
+            "actions": actions,
+            "cooldown_seconds": int(cfg.get("default_cooldown_seconds", 300) or 300),
+            "high_risk": high_risk,
+            "desc": f"条件联动：{condition.get('summary', '')} → {action_phrase}",
+            "source_text": text,
+        }
+        reply = (f"这属于条件联动，已生成草稿（尚未生效）：当「{condition.get('summary', '条件成立')}」"
+                 f"时，将{action_phrase}。"
+                 f"确认后我才会把它写成自动化规则；取消则不会写入任何内容。")
+        if high_risk:
+            reply += (" 注意：其中 " + "、".join(high_risk) +
+                      " 属于高危动作，确认时需要显式允许自动执行（allow_high_risk）。")
+        return TaskPlan(is_command=False, source="draft", reply=reply, draft=draft)
 
     # ---------- 场景关键词规则 ----------
     def _match_scene(self, text: str) -> Optional[str]:
@@ -375,7 +477,10 @@ class RootAgent:
 
     # ---------- LLM 慢路径：意图理解 + 任务拆解 ----------
     def _llm_plan(self, text: str, sensors: Optional[dict], history: Optional[list]) -> Optional[TaskPlan]:
-        system = self._build_system_prompt()
+        # 按意图裁剪「给模型看的设备清单」：写进 scope 供调用方展示/审计。
+        # 无信号时不裁剪（模糊指令需要全屋视野），见 toolkit/scoping.py 的设计说明。
+        scope: dict = {}
+        system = self._build_system_prompt(text, scope)
         sensor_text = json.dumps(sensors, ensure_ascii=False) if sensors else "{}"
         rag_context = kb.get_context(text)
         rag_section = f"\n\n{rag_context}" if rag_context else ""
@@ -421,7 +526,7 @@ class RootAgent:
         if not is_command:
             return TaskPlan(is_command=False, source="llm", reply=reply,
                             sub_tasks=[], state_version=self.store.version,
-                            context_used=context_used)
+                            context_used=context_used, scope=scope)
 
         raw_actions = result.get("actions")
         if not isinstance(raw_actions, list):
@@ -448,22 +553,23 @@ class RootAgent:
         if not sub_tasks:
             return TaskPlan(is_command=False, source="llm", reply=reply,
                             sub_tasks=[], state_version=self.store.version,
-                            context_used=context_used)
+                            context_used=context_used, scope=scope)
         return TaskPlan(is_command=True, source="llm", reply=reply,
                         sub_tasks=sub_tasks, state_version=self.store.version,
-                        context_used=context_used)
+                        context_used=context_used, scope=scope)
 
     # ---------- 慢环：意图理解 + 具体动作提议 ----------
-    def _describe_devices(self) -> str:
+    def _describe_devices(self, devices=None) -> str:
         """生成给模型看的设备清单（含可用命令与参数范围）。
 
+        `devices=None` 时用全量（保持旧调用语义）；传入列表则只描述这些设备。
         命令与参数范围直接取自 `toolkit.schema_gen.PARAM_SOURCE` —— prompt 与工具层
         共用同一份定义，避免出现"prompt 教模型调一个命令、工具层却不认"的漂移。
         """
         from ..toolkit.schema_gen import PARAM_SOURCE
 
         lines = []
-        for d in self.registry.all():
+        for d in (self.registry.all() if devices is None else devices):
             cmds = []
             for c in d.commands:
                 parts = []
@@ -483,7 +589,29 @@ class RootAgent:
                 f"| 命令：{' '.join(cmds)}")
         return "\n".join(lines)
 
-    def _build_system_prompt(self) -> str:
+    def _build_system_prompt(self, text: str = "", scope: Optional[dict] = None) -> str:
+        """组装慢环 prompt。设备清单按意图裁剪，裁剪结果写回 `scope` 供 trace 展示。
+
+        两条来自对照项目 Aether 的教训：
+        1. 工具/设备越多，选择精度越低（它把内置工具 22→17）；
+        2. 高危能力最好**默认不可见**，而不是让模型看见再拒绝 ——
+           "工具名本身就是泄漏源"，模型会顺着名字推理出它不该做的事。
+        """
+        from ..toolkit.scoping import select_devices
+
+        devices, scope_meta = select_devices(text, self.registry.all())
+        if scope is not None:
+            scope.update(scope_meta)
+
+        tail = ""
+        if scope_meta.get("narrowed"):
+            tail += (f"\n（本轮只列出与你这句话相关的 {len(devices)} 台设备；"
+                     f"未列出的设备本轮不提供，不要提议它们。若确实需要，"
+                     f"请在 reply 里说明并请用户补充。）")
+        if not scope_meta.get("high_risk_explicit"):
+            tail += ("\n（门锁解锁、燃气灶点火、摄像头直播等高危命令本轮未提供；"
+                     "不要提议，也不要用其它命令替代。）")
+
         return (
             "你是智能家居中控的编排者 Root，负责意图理解与动作提议，**只提议、不执行**。\n"
             "输出 JSON，格式如下：\n"
@@ -498,5 +626,5 @@ class RootAgent:
             "4. 单次回复最多 4 条动作：若目标需要更多，只做最关键的几条，并在 reply 里说明还差什么。\n"
             "5. 结合传感器与用户习惯可主动给出联动建议，但动作必须与用户指令相关。\n\n"
             "可用设备（id | 名称 | 房间 | 类别 | 当前状态 | 可用命令）：\n"
-            + self._describe_devices() + "\n\n只输出 JSON，不要输出其他文字。"
+            + self._describe_devices(devices) + tail + "\n\n只输出 JSON，不要输出其他文字。"
         )

@@ -6,6 +6,8 @@
     "sensor_seconds": 2.0,
     "alert_seconds": 5.0,
     "perception_seconds": 15.0,
+    "room_seconds": 5.0,
+    "adaptation_seconds": 60.0,
     "suggestion_cooldown_seconds": 300.0
   },
   "outer_loop": {

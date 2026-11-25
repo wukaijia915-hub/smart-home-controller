@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "note": "信任层配置：撤销窗口、可逆命令、不可逆清单、回读证据参数、输出层声明校验。不可逆清单与 lease.HIGH_RISK 同源，改这里必须同步改 lease.py 并跑 tests_csi.py / tests_agents.py。",
+  "undo_window_seconds": 600,
+  "reversible_commands": [
+    "turn_on",
+    "turn_off",
+    "set_brightness",
+    "set_color_temp",
+    "set_temperature",
+    "set_mode",
+    "set_fan_speed",
+    "set_humidity",
+    "open",
+    "close",
+    "set_position",
+    "set_speed",
+    "set_target",
+    "set_volume"
+  ],
+  "irreversible": [
+    {"category": "lock", "commands": ["unlock", "set_lock_mode"]},
+    {"category": "gas_stove", "commands": ["turn_on", "set_flame_level"]},
+    {"category": "camera", "commands": ["start_stream"]}
+  ],
+  "require_current_equals_after": true,
+  "snapshot_attributes": "all_number_and_bool",
+
+  "readback": {
+    "note": "「每控必核」的回读参数。settle_ms 是执行后等待状态传播的时间（真实适配器/HA 需要，虚拟设备同步生效故为 0）；numeric_tolerance 吸收浮点误差；untrusted_states 里的回读值视为『未核实』而不是『符合预期』—— 把 unknown 当成成功是回读校验最常见的假阳性来源。",
+    "settle_ms": 0,
+    "numeric_tolerance": 0.5,
+    "untrusted_states": ["", "unknown", "unavailable", "none", "null"]
+  },
+
+  "claim_check": {
+    "note": "输出层声明校验（防『嘴上说做完了』）。只读审计与状态，绝不产生设备动作；纯规则判定，不调模型。enabled=false 可整体回退到旧行为（只靠 Manager 保证执行真实发生）。",
+    "enabled": true,
+    "rewrite_reply": true,
+    "suffix_template": "（提示：{detail}。请以设备实际状态为准。）"
+  }
+}

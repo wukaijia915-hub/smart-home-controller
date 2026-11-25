@@ -131,13 +131,27 @@
     },
     {
       "name": "climate.set_humidity",
-      "description": "设定加湿器目标湿度（30-80%）",
-      "device_categories": ["humidifier"],
+      "description": "设定加湿/除湿目标湿度（30-80%）",
+      "device_categories": ["humidifier", "dehumidifier"],
       "command": "set_target",
       "params": {"target": 55},
       "aliases": [
         {"keyword": "太干", "params": {"target": 65}},
-        {"keyword": "干燥", "params": {"target": 65}}
+        {"keyword": "干燥", "params": {"target": 65}},
+        {"keyword": "太潮", "params": {"target": 45}},
+        {"keyword": "潮湿", "params": {"target": 45}}
+      ]
+    },
+    {
+      "name": "water_heater.set_temperature",
+      "description": "设定热水器目标水温（35-75℃）",
+      "device_categories": ["water_heater"],
+      "command": "set_temperature",
+      "params": {"temperature": 45},
+      "aliases": [
+        {"keyword": "水温", "params": {"temperature": 50}},
+        {"keyword": "洗澡水", "params": {"temperature": 45}},
+        {"keyword": "热水温度", "params": {"temperature": 50}}
       ]
     },
     {

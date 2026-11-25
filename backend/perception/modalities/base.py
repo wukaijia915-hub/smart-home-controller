@@ -49,11 +49,25 @@ class PerceptionContext:
     idle_minutes: float = 0.0
     #: 疑久卧时长（无摄像头证据时为 0，不参与判定）
     lying_minutes: float = 0.0
+    #: 房间四态摘要（来自 RoomService.summary()）：只有派生状态，没有原始 CSI。
+    #: 默认空字典 —— 未接入 CSI 时感知层行为与旧版完全一致。
+    rooms: dict = field(default_factory=dict)
+    #: 聚合在场态：present | empty | uncertain | degraded（由房间态归并）
+    presence_state: str = "uncertain"
     #: 评估时刻（用于深夜活动判定；默认取当前时间）
     now: Any = None
 
     def to_dict(self) -> dict:
         """用于审计/落盘的脱敏视图 —— 不包含任何原始画面数据。"""
+        rooms = {
+            str(room_id): {
+                "state": info.get("state", ""),
+                "confidence": info.get("confidence", 0.0),
+                "conflict": info.get("conflict", ""),
+                "sources": list(info.get("sources") or []),
+            }
+            for room_id, info in (self.rooms or {}).items()
+        }
         return {
             "scene_hint": self.scene_hint,
             "sensors": self.sensors,
@@ -62,6 +76,8 @@ class PerceptionContext:
             "vestibular_windows": len(self.vestibular.get("window_results", []) or []),
             "presence_minutes": round(self.presence_minutes, 1),
             "idle_minutes": round(self.idle_minutes, 1),
+            "presence_state": self.presence_state,
+            "rooms": rooms,
         }
 
 

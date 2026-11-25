@@ -11,11 +11,15 @@ EventRouter（Apache-2.0），按灵犀架构重写（JSON 配置 + registry.con
 """
 from __future__ import annotations
 
+import os
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+
+from .config_loader import data_path
 
 CONFIG_PATH = Path(__file__).resolve().parent / "config" / "event_routes.json"
 
@@ -43,15 +47,26 @@ class RouteEvaluation:
 
 
 class EventRouter:
-    """把结构化事件路由为「设备控制 + 告警通知」的声明式动作。"""
+    """把结构化事件路由为「设备控制 + 告警通知」的声明式动作。
+
+    路由来源有两个，**分开存放、合并生效**：
+    - `backend/config/event_routes.json`：随仓库发布的预置路由（只读语义）；
+    - `data/event_routes_custom.json`：用户经「草稿→确认」创建的规则（可增删）。
+    合并后由同一个 `route()` 执行，冷却/高危拒绝/回读证据对两者一视同仁 ——
+    用户创建的规则不是"另一条执行路径"，只是另一份配置。
+    """
 
     def __init__(self, registry, manager=None, routes_path: Optional[Path] = None,
-                 state_store=None, loop=None):
+                 state_store=None, loop=None, custom_path: Optional[Path] = None):
         self.registry = registry            # DeviceRegistry（含回读确认）
         self.manager = manager              # ConnectionManager（数字人广播，可空）
         self.state_store = state_store      # StateStore（审计 + 版本递增，可空）
         self.routes_path = routes_path or CONFIG_PATH
+        # 自定义路由落在运行时状态目录（LINGXI_DATA_DIR 可覆盖），测试天然隔离
+        self.custom_path = custom_path or data_path("event_routes_custom.json")
         self.raw: dict[str, Any] = {}
+        self._base_routes: list[dict] = []
+        self._custom_routes: list[dict] = []
         self._last_action_at: dict[str, float] = {}
         self._loop = loop                   # 主事件循环（由 lifespan 注入，见 set_loop）
         self.load()
@@ -65,13 +80,70 @@ class EventRouter:
         self._loop = loop
 
     def load(self) -> None:
-        if not self.routes_path.exists():
-            self.raw = {"routes": []}
-            return
+        self._base_routes = self._read_routes(self.routes_path)
+        self._custom_routes = self._read_routes(self.custom_path)
+        self.raw = {"routes": [*self._base_routes, *self._custom_routes]}
+
+    @staticmethod
+    def _read_routes(path) -> list[dict]:
+        if not path:
+            return []
+        p = Path(path)
+        if not p.exists():
+            return []
         try:
-            self.raw = json_load(self.routes_path)
+            data = json_load(p)
         except Exception:
-            self.raw = {"routes": []}
+            return []
+        routes = data.get("routes") if isinstance(data, dict) else None
+        return [r for r in (routes or []) if isinstance(r, dict)]
+
+    # ---------- 自定义路由的增删（草稿确认后调用） ----------
+    def add_route(self, route: dict) -> dict:
+        """追加一条自定义路由并落盘。id 冲突时自动加后缀，绝不覆盖预置路由。"""
+        self.load()
+        route = dict(route)
+        rid = str(route.get("id") or "")
+        if not rid:
+            rid = f"user_{uuid.uuid4().hex[:8]}"
+        existing = {str(r.get("id") or "") for r in self._custom_routes}
+        if rid in existing or any(str(r.get("id") or "") == rid for r in self._base_routes):
+            rid = f"{rid}_{uuid.uuid4().hex[:4]}"
+        route["id"] = rid
+        self._custom_routes = [*self._custom_routes, route]
+        self._save_custom()
+        self.load()
+        return route
+
+    def remove_route(self, route_id: str) -> bool:
+        """删除一条**自定义**路由。预置路由不可删（返回 False）。"""
+        self.load()
+        kept = [r for r in self._custom_routes if str(r.get("id") or "") != route_id]
+        if len(kept) == len(self._custom_routes):
+            return False
+        self._custom_routes = kept
+        self._save_custom()
+        self.load()
+        return True
+
+    def list_custom(self) -> list[dict]:
+        self.load()
+        return list(self._custom_routes)
+
+    def list_base(self) -> list[dict]:
+        """预置路由（只读，随仓库发布）。"""
+        self.load()
+        return list(self._base_routes)
+
+    def _save_custom(self) -> None:
+        path = Path(self.custom_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(
+            json_dumps({"version": 1, "routes": self._custom_routes}),
+            encoding="utf-8",
+        )
+        os.replace(tmp, path)      # 原子替换：半截文件不会被下一次 load 读到
 
     # ---------- 主入口 ----------
     def route(self, event: dict[str, Any]) -> RouteEvaluation:
@@ -163,13 +235,23 @@ class EventRouter:
             refused.update({"route_id": route_id, "type": "device"})
             return refused
 
-        result = dict(self.registry.control(device_id, command, params))
+        # 唯一写入口：事件路径也走 execution，从而拿到与对话路径同款的
+        # 审计（before/after/readback）、六段链与撤销记录。
+        # 高危拒绝已在上面 _refuse_high_risk 完成，这里 allow_high_risk=True
+        # 只是"放行已经显式授权的动作"，不是绕过检查。
+        from . import execution
+        result = execution.execute_action(
+            device_id, command, params,
+            registry=self.registry, store=self.state_store, source="event_route",
+            allow_high_risk=True,
+            causal={
+                "signal": {"event_type": event.get("type", ""),
+                           "source": event.get("source", ""),
+                           "payload": event.get("payload") or {}},
+                "inference": {"route_id": route_id, "spec": dict(spec)},
+                "gate": {"refuse_high_risk": "passed_or_explicitly_allowed"},
+            })
         result.update({"route_id": route_id, "type": "device"})
-        if self.state_store is not None and result.get("ok"):
-            # 必须 bump：否则事件路径改动了设备状态却不递增版本号，
-            # 会让后续用户指令的租约版本与真相源脱节（表现为「指令莫名失效」）。
-            self.state_store.bump()
-            self.state_store.record(None, device_id, command, params, result)
         return result
 
     def _refuse_high_risk(self, device_id: str, command: str, spec: dict) -> Optional[dict]:
@@ -296,3 +378,8 @@ def _lookup(payload: dict[str, Any], path: str, missing: Any = "") -> Any:
 def json_load(path: Path) -> dict[str, Any]:
     import json
     return json.loads(path.read_text(encoding="utf-8")) or {"routes": []}
+
+
+def json_dumps(data: Any) -> str:
+    import json
+    return json.dumps(data, ensure_ascii=False, indent=2)

@@ -50,11 +50,39 @@ class ToolRegistry:
     def get(self, name: str) -> Optional[Tool]:
         return self._tools.get(name)
 
+    @property
+    def device_registry(self):
+        """执行目标（DeviceRegistry）。供按意图裁剪使用。"""
+        return self._registry
+
     def list_tools(self, category: Optional[str] = None) -> list[Tool]:
         tools = list(self._tools.values())
         if category:
             tools = [t for t in tools if t.category == category]
         return tools
+
+    def list_tools_scoped(self, intent: str = "") -> tuple[list[Tool], dict]:
+        """按意图裁剪工具集（`toolkit/scoping.py`）。
+
+        intent 为空 → 全量（保持 `/api/tools` 与 MCP 的旧语义）。
+        不裁剪的情况见 scoping 模块头：一句话没有任何房间/类别信号时，
+        裁剪等于人为制造盲区。
+        """
+        from .scoping import select_tools
+
+        all_tools = self.list_tools()
+        if not intent or self._registry is None:
+            return all_tools, {
+                "narrowed": False, "before": len(self._tools), "after": len(all_tools),
+                "tools_before": len(all_tools), "tools_after": len(all_tools),
+                "high_risk_hidden": 0, "reason": "未提供 intent，返回全量",
+            }
+        devices = {d.device_id: d for d in self._registry.all()}
+        return select_tools(intent, all_tools, devices)
+
+    def list_schemas_scoped(self, intent: str = "") -> tuple[list[dict], dict]:
+        tools, meta = self.list_tools_scoped(intent)
+        return [t.to_schema() for t in tools], meta
 
     def list_schemas(self) -> list[dict]:
         """输出所有工具的 OpenAI Function Calling schema。"""

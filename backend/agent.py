@@ -20,6 +20,9 @@ from .memory.habits import habits
 from .observability.llm_log import llm_log
 from .skills import skill_manager
 from .state import StateStore
+from .toolkit.scoping import describe_scope
+from .verification import apply_suffix, check_claims
+from .verification.claim_checker import load_claim_settings
 
 
 class HomeAgent:
@@ -63,15 +66,48 @@ class HomeAgent:
         if plan.source == "llm":
             self.router.guard.record_upload(route.level, text, cloud_text or text)
 
-        # 无操作意图（寒暄 / 兜底 / LLM 判断 is_command=false）：不执行任何设备
+        # 无操作意图（寒暄 / 兜底 / LLM 判断 is_command=false / 条件句草稿）：
+        # 不执行任何设备。但**仍要核对回复里的声明** —— 模型完全可以一个动作都
+        # 没提议，却在正文里说"已为您打开客厅灯"。
         if not plan.is_command or not plan.sub_tasks:
-            self._remember(text, plan.reply)
+            # 草稿入箱：放在门面层而不是路由层，于是 HTTP/WS/webhook/MQTT 所有
+            # 渠道都拿到同一个可确认的 draft_id（不存在"某个通道的草稿点不了确认"）。
+            draft_info = None
+            reply = plan.reply
+            if plan.draft:
+                from .drafts import draft_store
+                stored = draft_store.create(payload=plan.draft,
+                                            summary=plan.draft.get("desc", ""))
+                if stored is None:
+                    reply = reply + " 不过草稿箱已满，请先确认或取消已有草稿后再试。"
+                else:
+                    draft_info = stored.to_dict()
+
+            claim = check_claims(reply, [], [], self._device_meta())
+            reply = apply_suffix(reply, claim, load_claim_settings()) if claim.issues else reply
+            self._remember(text, reply)
             trace = [{"step": "propose", "detail": "无操作意图，未执行任何设备", "ok": True}]
+            if draft_info:
+                trace.append({"step": "draft",
+                              "detail": (f"生成规则草稿 {draft_info['draft_id']}（未生效）："
+                                         f"{draft_info['summary']}"),
+                              "ok": True})
+            elif plan.draft:
+                trace.append({"step": "draft", "detail": "草稿箱已满，未入箱", "ok": False})
+            if claim.issues:
+                trace.append({"step": "claim", "detail": "声明校验：" + claim.detail(), "ok": False})
             self._record_metrics(plan, trace, plan_ms, t_start)
             return {
-                "reply": plan.reply,
+                "reply": reply,
                 "actions": [],
                 "results": [],
+                "verification": {"total": 0, "confirmed": 0, "delivered": 0,
+                                 "failed": 0, "error": 0, "rejected": 0,
+                                 "all_confirmed": False, "unverified": []},
+                "claim_issues": [i.to_dict() for i in claim.issues],
+                "scope": plan.scope or {},
+                "draft": draft_info,
+                "draft_id": draft_info["draft_id"] if draft_info else "",
                 "digital_human": {"emotion": "neutral", "action": "speak"},
                 "decision_trace": trace,
                 "edge_cloud": route.to_dict(),
@@ -81,7 +117,24 @@ class HomeAgent:
                 "llm_budget": self._budget_view(trace),
             }
 
-        report = self.manager.run(plan, self.session)
+        report = self.manager.run(plan, self.session, causal={
+            "signal": {"text": text, "plan_source": plan.source,
+                       "state_version": plan.state_version,
+                       "edge_cloud_level": route.level},
+            "inference": {"actions": [{"device_id": s.device_id, "command": s.command}
+                                      for s in plan.sub_tasks],
+                          "context_used": plan.context_used,
+                          "scope": plan.scope},
+            "gate": {"high_risk": "manager", "param_envelope": "execution",
+                     "lease": "plan-level"},
+        })
+
+        # 输出层声明校验：Manager 保证"执行真实发生"，本层保证"回复没说错"。
+        # 只读、零 LLM、可配置关闭（trust.json → claim_check）。
+        claim_cfg = load_claim_settings()
+        claim = check_claims(report.reply, report.actions, report.results,
+                             self._device_meta(), cfg=claim_cfg)
+        reply = apply_suffix(report.reply, claim, claim_cfg) if claim.issues else report.reply
 
         # RAG：记录用户操作 / 场景习惯
         for r in report.results:
@@ -91,19 +144,30 @@ class HomeAgent:
         if scene:
             kb.record_scene(scene)
 
-        self._remember(text, report.reply)
+        self._remember(text, reply)
 
         trace = [t.to_dict() for t in report.trace]
         # 注入了哪些记忆：单独一条 trace，让"经验复用"在界面上是可复核的事实
         if plan.context_used:
             trace.insert(0, {"step": "recall",
                              "detail": self._describe_context(plan.context_used), "ok": True})
+        # 工具/设备清单被裁了多少：可复核的"模型本轮看见了什么"
+        if (plan.scope or {}).get("narrowed"):
+            trace.insert(0, {"step": "scope", "detail": describe_scope(plan.scope), "ok": True})
+        if claim.issues:
+            trace.append({"step": "claim", "detail": "声明校验：" + claim.detail(), "ok": False})
         self._record_experience(plan, report, text)
         self._record_metrics(plan, trace, plan_ms, t_start)
         return {
-            "reply": report.reply,
+            "reply": reply,
             "actions": report.actions,
             "results": report.results,
+            "verification": report.verification,
+            "claim_issues": [i.to_dict() for i in claim.issues],
+            "scope": plan.scope or {},
+            "draft": None,
+            "draft_id": "",
+            "decision_id": getattr(report, "decision_id", ""),
             "digital_human": {"emotion": "happy" if report.actions else "neutral", "action": "speak"},
             "decision_trace": trace,
             "edge_cloud": route.to_dict(),
@@ -202,6 +266,15 @@ class HomeAgent:
         if result.get("ok"):
             kb.record_command(result.get("device_id", ""), result.get("command", ""), result.get("params", {}))
         return result
+
+    def _device_meta(self) -> dict:
+        """设备元数据（id → 名称/类别/房间），供输出层声明校验做指称匹配。
+
+        只在 agent（装配层）里取设备信息，claim_checker 本身不 import 设备层 ——
+        与 `main._device_name` 是同一个思路：只读层需要的事实由外面注入。
+        """
+        return {d.device_id: {"name": d.name, "category": d.category, "room": d.room}
+                for d in self.registry.all()}
 
     def _remember(self, text: str, reply: str):
         self.session.append({"role": "user", "content": text})

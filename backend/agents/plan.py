@@ -41,3 +41,10 @@ class TaskPlan:
     # 存在的意义是**让"经验复用"可被复核**：答辩时能指出这一轮到底参考了哪几条
     # 历史案例，而不是只能声称"系统会学习"。
     context_used: list = field(default_factory=list)                 # rule | llm | tool | fallback
+    # 本轮「给模型看的设备清单」被裁剪了多少（toolkit/scoping 的 meta）。
+    # 空 dict 表示未裁剪或没走慢环。进 trace 后，答辩可以指出「这一轮模型只看见
+    # 3 台设备，不是 17 台」。
+    scope: dict = field(default_factory=dict)
+    # 条件句生成的规则草稿（草稿→确认两段式）。非空表示本轮**只产草稿、未执行**。
+    # 键：match / actions / summary / condition_id / high_risk / desc。
+    draft: dict = field(default_factory=dict)
