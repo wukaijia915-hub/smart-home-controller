@@ -120,12 +120,15 @@ class ErrorTestSuite:
     # ---------- 6. 工具注册表参数校验 ----------
     def test_tool_validation(self):
         print("\n【6】工具注册表参数校验")
-        # 测试工具调用的参数校验
+        # 工具名格式为 <device_id>__<command>，参数名与设备属性一致
+        # （旧用例用 set_客厅_light / power / target_temp，那些名字在工具层不存在，
+        #   于是 4 条用例全部退化成"未知工具"，看似通过实则没测到校验逻辑）
         test_cases = [
             ("未知工具", {"name": "nonexistent_tool", "params": {}}, "应返回未知工具错误"),
-            ("缺少必填参数", {"name": "set_客厅_light", "params": {}}, "应返回缺少参数错误"),
-            ("枚举值无效", {"name": "set_客厅_ac", "params": {"power": "invalid"}}, "应返回枚举错误"),
-            ("数值越界", {"name": "set_客厅_ac", "params": {"power": "on", "target_temp": 100}}, "应返回越界错误"),
+            ("缺少必填参数", {"name": "ac_living_01__set_temperature", "params": {}}, "应返回缺少参数错误"),
+            ("枚举值无效", {"name": "ac_living_01__set_mode", "params": {"mode": "invalid"}}, "应返回枚举错误"),
+            ("数值越界", {"name": "ac_living_01__set_temperature", "params": {"temperature": 100}}, "应返回越界错误"),
+            ("枚举值无效(风速)", {"name": "fan_living_01__set_speed", "params": {"speed": "medium"}}, "应返回枚举错误"),
         ]
         for name, params, expected in test_cases:
             result = tool_registry.call(params["name"], params.get("params", {}))

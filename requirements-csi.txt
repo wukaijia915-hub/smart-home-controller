@@ -1,0 +1,3 @@
+# 可选依赖：只给 CSI 接入与探针用。
+# 未安装时 backend/ingest 的 available()=False，主链照常启动（不会 import 失败）。
+paho-mqtt>=2.1

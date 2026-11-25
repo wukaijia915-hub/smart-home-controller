@@ -156,6 +156,34 @@ def _gas_stove(device_id: str, name: str, room: str) -> Device:
     )
 
 
+def _water_heater(device_id: str, name: str, room: str) -> Device:
+    """热水器：可调度大功率设备（L5 的峰谷/截止时间排程对象）。"""
+    return Device(
+        device_id=device_id, name=name, category=DeviceCategory.WATER_HEATER, room=room,
+        attributes={
+            "on": Attribute("on", False, "bool", label="开关"),
+            "temperature": Attribute("temperature", 45, "number", min=35, max=75, unit="℃", label="目标水温"),
+            "mode": Attribute("mode", "eco", "enum", options=["eco", "fast", "smart"], label="模式"),
+            "power": Attribute("power", 0, "number", min=0, max=3000, unit="W", label="当前功率"),
+        },
+        commands=["turn_on", "turn_off", "set_temperature", "set_mode"],
+    )
+
+
+def _dehumidifier(device_id: str, name: str, room: str) -> Device:
+    """除湿机：与空调争夺"体感"这一目标的协商对象。"""
+    return Device(
+        device_id=device_id, name=name, category=DeviceCategory.DEHUMIDIFIER, room=room,
+        attributes={
+            "on": Attribute("on", False, "bool", label="开关"),
+            "humidity": Attribute("humidity", 55, "number", min=30, max=90, unit="%", label="当前湿度"),
+            "target": Attribute("target", 50, "number", min=30, max=80, unit="%", label="目标湿度"),
+            "mode": Attribute("mode", "auto", "enum", options=["auto", "dry", "quiet"], label="模式"),
+        },
+        commands=["turn_on", "turn_off", "set_target", "set_mode"],
+    )
+
+
 def _device_from_config(cfg: dict) -> Device:
     """从 JSON 配置项创建 Device 对象。"""
     attrs = {}
@@ -178,6 +206,7 @@ def _device_from_config(cfg: dict) -> Device:
         attributes=attrs,
         commands=cfg.get("commands", []),
         protocol=cfg.get("protocol", "virtual"),
+        twin_of=cfg.get("twin_of", ""),
     )
 
 
@@ -206,6 +235,9 @@ def build_default_devices() -> list[Device]:
         _light("light_bedroom_01", "卧室吸顶灯", "卧室", brightness=0),
         _curtain("curtain_bedroom_01", "卧室窗帘", "卧室", position=0),
         _ac("ac_bedroom_01", "卧室空调", "卧室"),
+        _dehumidifier("dehumidifier_bedroom_01", "卧室除湿机", "卧室"),
+        # 卫浴
+        _water_heater("water_heater_bathroom_01", "卫浴热水器", "卫浴"),
     ]
 
 
@@ -222,6 +254,8 @@ DEVICE_COMMAND_MAP = {
     DeviceCategory.CAMERA: {"start_stream", "stop_stream", "take_photo"},
     DeviceCategory.SPEAKER: {"turn_on", "turn_off", "play_music", "stop_music", "set_volume"},
     DeviceCategory.GAS_STOVE: {"turn_on", "turn_off", "set_flame_level"},
+    DeviceCategory.WATER_HEATER: {"turn_on", "turn_off", "set_temperature", "set_mode"},
+    DeviceCategory.DEHUMIDIFIER: {"turn_on", "turn_off", "set_target", "set_mode"},
 }
 
 
@@ -240,8 +274,13 @@ def apply_command(device: Device, command: str, params: dict) -> bool:
             br = device.get("brightness")
             if br is None or br == 0:
                 device.set("brightness", 80)
+        # 大功率设备：开即报功率（供 L5 能耗/预算评估与插座旁证使用）
+        if device.category == DeviceCategory.WATER_HEATER:
+            device.set("power", 2000 if device.get("mode") != "fast" else 2800)
     elif command == "turn_off":
         device.set("on", False)
+        if device.category == DeviceCategory.WATER_HEATER:
+            device.set("power", 0)
     elif command == "set_brightness":
         device.set("on", True)
         device.set("brightness", int(params.get("brightness", 80)))

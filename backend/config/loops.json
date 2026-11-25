@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "note": "快慢双环参数（移植心镜 config.py 的 Settings 外置做法）。全部为秒/时，改这里不需要改 Python。演示时把 outer_loop.cron_hour/cron_minute 改成当前分钟即可现场触发日报，不必等到 22:00。",
+  "inner_loop": {
+    "note": "内环：零 LLM 的确定性路径。sensor 2s 推状态、alert 5s 判阈值、perception 15s 跑多模态融合。",
+    "sensor_seconds": 2.0,
+    "alert_seconds": 5.0,
+    "perception_seconds": 15.0,
+    "room_seconds": 5.0,
+    "adaptation_seconds": 60.0,
+    "suggestion_cooldown_seconds": 300.0
+  },
+  "outer_loop": {
+    "note": "外环：LLM 深度分析环。每日一次生成家庭日报，LLM 优先、模板降级。",
+    "enabled": true,
+    "cron_hour": 22,
+    "cron_minute": 0,
+    "timezone": "Asia/Shanghai",
+    "llm_max_tokens": 700,
+    "llm_timeout_seconds": 20.0
+  }
+}

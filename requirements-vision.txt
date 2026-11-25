@@ -1,0 +1,18 @@
+# 可选视觉依赖 —— 让「面部表情」模态可用。
+#
+# 为什么单独一个文件：DeepFace 会带入 TensorFlow，合计约 2GB，
+# 与项目「pip install 即跑、requirements 只有几行」的工程取向直接冲突。
+# 所以它是**可选**的：
+#
+#     pip install -r requirements.txt                    # 基础，零重依赖
+#     pip install -r requirements-vision.txt             # 额外启用面部表情模态
+#
+# 未安装时 FacialExpressionModality.available() 返回 False、detect() 返回 None，
+# 感知层少一路证据但照常工作 —— 融合置信度会相应下降（而不是被编造出来）。
+# 这一降级路径由 tests_perception.py 覆盖。
+
+deepface>=0.0.90
+tensorflow>=2.15.0
+
+# 说明：面部表情模态是**演示级**，不做准确率承诺，也不作为控制回路输入。
+# 详见 backend/perception/modalities/facial_expression.py 的四条边界。

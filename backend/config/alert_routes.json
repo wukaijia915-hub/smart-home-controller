@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "note": "内环告警阈值（声明式）。原实现是 main.py 里成排的 `if s.get('temp_indoor',25) > 30`，阈值散落在代码里、改一次要重启。这里只负责『读数 → 结构化事件』，事件怎么路由到设备动作由 event_routes.json 决定（两个文件各管一件事）。注意：本层是**确定性阈值判定**（读数直接比大小），与感知层的统计推断不是一回事，所以本层允许触发设备动作，感知层不允许（见 CLAUDE.md 红线 1）。",
+  "sources": [
+    {
+      "id": "temp_high",
+      "sensor": "temp_indoor",
+      "op": ">",
+      "value": 30,
+      "severity": "warning",
+      "event_type": "climate_anomaly",
+      "kind": "temp_high",
+      "message_template": "当前室内温度 {value:.0f}℃，已超过舒适阈值 {threshold:.0f}℃，建议开启空调降温。",
+      "cooldown_seconds": 60
+    },
+    {
+      "id": "temp_low",
+      "sensor": "temp_indoor",
+      "op": "<",
+      "value": 15,
+      "severity": "warning",
+      "event_type": "climate_anomaly",
+      "kind": "temp_low",
+      "message_template": "当前室内温度 {value:.0f}℃，低于 {threshold:.0f}℃，偏冷，建议开启空调制热。",
+      "cooldown_seconds": 60
+    },
+    {
+      "id": "air_poor",
+      "sensor": "air_quality",
+      "op": "<",
+      "value": 50,
+      "severity": "notice",
+      "event_type": "air_quality_anomaly",
+      "kind": "air_poor",
+      "message_template": "当前空气质量指数 {value:.0f}，低于良好线 {threshold:.0f}，建议开窗通风或开启新风。",
+      "cooldown_seconds": 120
+    },
+    {
+      "id": "humidity_low",
+      "sensor": "humidity",
+      "op": "<",
+      "value": 30,
+      "severity": "info",
+      "event_type": "climate_anomaly",
+      "kind": "humidity_low",
+      "message_template": "室内湿度 {value:.0f}%，低于 {threshold:.0f}%，建议开启加湿器。",
+      "cooldown_seconds": 300
+    },
+    {
+      "id": "light_low_occupied",
+      "sensor": "light_level",
+      "op": "<",
+      "value": 50,
+      "severity": "info",
+      "event_type": "lighting_hint",
+      "kind": "light_low_occupied",
+      "require_any_sensor": ["motion_living", "motion_bedroom"],
+      "message_template": "客厅光线 {value:.0f} lux，有人活动但偏暗，建议补光。",
+      "cooldown_seconds": 300
+    }
+  ],
+  "device_health": {
+    "note": "设备离线/故障单独一类：它不是『读数越界』，触发条件随设备清单变化，因此用规则声明而不是写死在循环里。",
+    "event_type": "device_health",
+    "severity": "warning",
+    "message_template": "设备「{device_name}」当前{state_label}，请检查。",
+    "cooldown_seconds": 300
+  }
+}

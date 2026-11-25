@@ -36,7 +36,7 @@ class MCPServer:
             if method == "initialize":
                 return self._response(req_id, self._handle_initialize(params))
             elif method == "tools/list":
-                return self._response(req_id, self._handle_tools_list())
+                return self._response(req_id, self._handle_tools_list(params))
             elif method == "tools/call":
                 return self._response(req_id, self._handle_tools_call(params))
             elif method == "ping":
@@ -57,16 +57,30 @@ class MCPServer:
             "serverInfo": SERVER_INFO,
         }
 
-    def _handle_tools_list(self) -> dict:
-        tools = []
-        for t in self.registry.list_tools():
+    def _handle_tools_list(self, params: dict | None = None) -> dict:
+        """列出工具。
+
+        可选 `params.intent`：按意图裁剪（非 MCP 标准字段，标准客户端会忽略）。
+        存在的理由是工具数量与选择精度成反比 —— 外部 AI 客户端一次拿 64 个工具
+        时，与"用户这句话只该看见 6 个"是两回事。对照项目 Aether 的做法是
+        按回合变体裁剪工具集（full / rule_create / no_create / clean）。
+        """
+        intent = ""
+        if isinstance(params, dict):
+            intent = str(params.get("intent") or "")
+        tools, meta = self.registry.list_tools_scoped(intent)
+        out = []
+        for t in tools:
             schema = t.to_schema()["function"]
-            tools.append({
+            out.append({
                 "name": schema["name"],
                 "description": schema["description"],
                 "inputSchema": schema["parameters"],
             })
-        return {"tools": tools}
+        result = {"tools": out}
+        if intent:
+            result["scope"] = meta
+        return result
 
     def _handle_tools_call(self, params: dict) -> dict:
         name = params.get("name", "")

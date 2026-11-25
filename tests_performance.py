@@ -87,7 +87,7 @@ class PerformanceTester:
         latencies = []
         for text in test_inputs[:runs]:
             t0 = time.perf_counter()
-            self.agent._llm_plan(text)
+            self.agent.root._llm_plan(text, None, None)
             t1 = time.perf_counter()
             latencies.append((t1 - t0))
 

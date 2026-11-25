@@ -3,3 +3,6 @@ uvicorn[standard]>=0.29
 requests>=2.31
 python-dotenv>=1.0
 edge-tts>=7.0
+
+# 定时任务调度（main.py lifespan 中 init_scheduler 使用，缺失会导致服务启动失败）
+apscheduler>=3.10

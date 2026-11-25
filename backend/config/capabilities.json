@@ -131,13 +131,27 @@
     },
     {
       "name": "climate.set_humidity",
-      "description": "设定加湿器目标湿度（30-80%）",
-      "device_categories": ["humidifier"],
+      "description": "设定加湿/除湿目标湿度（30-80%）",
+      "device_categories": ["humidifier", "dehumidifier"],
       "command": "set_target",
       "params": {"target": 55},
       "aliases": [
         {"keyword": "太干", "params": {"target": 65}},
-        {"keyword": "干燥", "params": {"target": 65}}
+        {"keyword": "干燥", "params": {"target": 65}},
+        {"keyword": "太潮", "params": {"target": 45}},
+        {"keyword": "潮湿", "params": {"target": 45}}
+      ]
+    },
+    {
+      "name": "water_heater.set_temperature",
+      "description": "设定热水器目标水温（35-75℃）",
+      "device_categories": ["water_heater"],
+      "command": "set_temperature",
+      "params": {"temperature": 45},
+      "aliases": [
+        {"keyword": "水温", "params": {"temperature": 50}},
+        {"keyword": "洗澡水", "params": {"temperature": 45}},
+        {"keyword": "热水温度", "params": {"temperature": 50}}
       ]
     },
     {
@@ -159,7 +173,10 @@
       "params": {},
       "aliases": [
         {"keyword": "开门锁"},
-        {"keyword": "解锁"}
+        {"keyword": "解锁"},
+        {"keyword": "把门锁打开"},
+        {"keyword": "打开门锁"},
+        {"keyword": "开一下门锁"}
       ]
     },
     {
@@ -172,6 +189,51 @@
         {"keyword": "扫地"},
         {"keyword": "打扫"},
         {"keyword": "清扫"}
+      ]
+    },
+    {
+      "name": "kitchen.gas_stove_on",
+      "description": "打开燃气灶",
+      "device_categories": ["gas_stove"],
+      "command": "turn_on",
+      "params": {},
+      "aliases": [
+        {"keyword": "打开燃气灶"},
+        {"keyword": "开燃气灶"},
+        {"keyword": "点燃气灶"}
+      ]
+    },
+    {
+      "name": "kitchen.gas_stove_off",
+      "description": "关闭燃气灶",
+      "device_categories": ["gas_stove"],
+      "command": "turn_off",
+      "params": {},
+      "aliases": [
+        {"keyword": "关闭燃气灶"},
+        {"keyword": "关燃气灶"}
+      ]
+    },
+    {
+      "name": "kitchen.range_hood",
+      "description": "打开抽油烟机",
+      "device_categories": ["range_hood"],
+      "command": "turn_on",
+      "params": {},
+      "aliases": [
+        {"keyword": "打开油烟机"},
+        {"keyword": "开油烟机"}
+      ]
+    },
+    {
+      "name": "security.camera_stream",
+      "description": "开启摄像头直播",
+      "device_categories": ["camera"],
+      "command": "start_stream",
+      "params": {},
+      "aliases": [
+        {"keyword": "打开摄像头"},
+        {"keyword": "开摄像头"}
       ]
     },
     {

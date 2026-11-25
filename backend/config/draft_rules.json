@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "note": "对话建规则的『条件 → 事件』映射（声明式）。原则：条件句不立即执行，只生成草稿；用户确认后才写入 data/event_routes_custom.json 并生效。这套两段式是对旧行为（诚实拒绝『我不会立刻执行』）的升级 —— 拒绝不丢，只是从『做不到』变成『先给你看草稿』。新增可建规则类型只改这里，不改 Python。",
+  "ttl_seconds": 600,
+  "max_pending": 20,
+  "default_cooldown_seconds": 300,
+  "action_split_keywords": ["就", "则", "便"],
+  "conditions": [
+    {
+      "id": "temp_high",
+      "keywords": ["温度高于", "温度超过", "屋里太热", "房间太热", "变热", "太热"],
+      "event_type": "climate_anomaly",
+      "match_payload": {"kind": "temp_high"},
+      "summary": "室内温度超过告警阈值（阈值在 config/alert_routes.json，可复核）"
+    },
+    {
+      "id": "temp_low",
+      "keywords": ["温度低于", "太冷", "变冷"],
+      "event_type": "climate_anomaly",
+      "match_payload": {"kind": "temp_low"},
+      "summary": "室内温度低于告警阈值（阈值在 config/alert_routes.json）"
+    },
+    {
+      "id": "air_poor",
+      "keywords": ["空气差", "空气不好", "空气糟", "雾霾", "闷"],
+      "event_type": "air_quality_anomaly",
+      "match_payload": {"kind": "air_poor"},
+      "summary": "空气质量低于阈值（阈值在 config/alert_routes.json）"
+    },
+    {
+      "id": "no_person",
+      "keywords": ["没人", "没有人在", "无人在家", "离家", "不在家", "出门"],
+      "event_type": "no_person",
+      "summary": "检测到家中无人（由端侧/传感器事件源上报）"
+    },
+    {
+      "id": "person",
+      "keywords": ["有人", "检测到人", "来人", "回家", "到家"],
+      "event_type": "person_detected",
+      "summary": "检测到有人（由端侧视觉/门磁事件源上报）"
+    },
+    {
+      "id": "fall",
+      "keywords": ["跌倒", "摔倒"],
+      "event_type": "fall_detected",
+      "severity_at_least": "critical",
+      "summary": "检测到跌倒"
+    },
+    {
+      "id": "hazard",
+      "keywords": ["隐患", "明火", "漏水", "烟雾", "煤气"],
+      "event_type": "safety_hazard",
+      "severity_at_least": "warning",
+      "summary": "检测到安全隐患"
+    }
+  ]
+}

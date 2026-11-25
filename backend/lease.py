@@ -10,7 +10,9 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
+
+from .gate import Gate, GateResult
 
 # 高危操作策略：(category, command) 命中即需二次确认
 HIGH_RISK = {
@@ -107,3 +109,52 @@ class LeaseValidator:
     @staticmethod
     def high_risk_desc(category: str, command: str) -> str:
         return HIGH_RISK_DESC.get((category, command), f"{category}.{command}")
+
+
+class LeaseGate(Gate):
+    """租约门控：把 `LeaseValidator.verify` 包成统一的 `GateResult`。
+
+    ## 与感知层的同构关系
+
+        感知层 MultiModalGate：单个模态可能误判 → 多个模态都同意了才采信
+        执行层 LeaseGate     ：单条指令可能是幻觉 → 租约/版本/范围全部通过了才执行
+
+    两侧都是「默认不信任 → 交叉验证 → 不过就拒绝」，且共用 `backend/gate.py`
+    的同一套抽象。这不是文档里的类比，是同一处代码结构。
+
+    本类**不重复实现校验逻辑**，只做结果形状转换 —— 校验的唯一真相源仍是
+    `LeaseValidator.verify()`，避免两套校验分叉。
+    """
+
+    name = "lease"
+
+    def evaluate(self, subject: Any) -> GateResult:
+        """评估一条待执行动作的授权。
+
+        subject 需为 dict：
+            {
+              "lease": Lease,              # 必填
+              "current_version": int,      # 必填，取自 StateStore.version
+              "device": Device | None,     # 可选；传入后可做参数包络校验（阶段2）
+            }
+        """
+        if not isinstance(subject, dict) or "lease" not in subject:
+            return GateResult(passed=False, confidence=0.0,
+                              reason="subject 缺少 lease 字段", evidence={})
+
+        lease = subject["lease"]
+        current_version = subject.get("current_version", lease.state_version)
+
+        ok, reason = LeaseValidator.verify(lease, current_version)
+
+        # 高危操作即使租约有效也不等于可以执行 —— 它需要人工确认，
+        # 所以这里判为"未通过门控"，由上层走挂起流程
+        if ok and lease.risk == "high":
+            return GateResult(
+                passed=False, confidence=0.0,
+                reason=f"高危操作需二次确认：{lease.device_id}.{lease.command}",
+                evidence={"lease": lease.to_dict(), "requires_confirmation": True})
+
+        return GateResult(
+            passed=ok, confidence=1.0 if ok else 0.0, reason=reason,
+            evidence={"lease": lease.to_dict(), "current_version": current_version})

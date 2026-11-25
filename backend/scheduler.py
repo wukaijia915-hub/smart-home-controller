@@ -98,6 +98,37 @@ async def _execute_task(task_id: str, cfg: dict):
         })
 
 
+def add_internal_job(job_id: str, func, hour: int, minute: int,
+                     timezone: str = "Asia/Shanghai"):
+    """注册一个**内部**作业（如 22:00 家庭日报）。
+
+    与 `add_task` 的区别：内部作业不进 `_tasks`、不写 `data/scheduled_tasks.json`、
+    不出现在 `/api/schedule/tasks` 里。理由：它是系统功能的一部分，不是用户建的
+    定时任务 —— 混在一起的话，用户会在"定时任务"面板里看到一个删不掉的
+    "家庭日报"，删了还会因为持久化文件而复活。
+    """
+    if _scheduler is None:
+        raise RuntimeError("调度器未初始化（先调用 init_scheduler）")
+    _scheduler.add_job(
+        func,
+        trigger=CronTrigger(hour=hour, minute=minute, timezone=timezone),
+        id=f"internal:{job_id}",
+        replace_existing=True,
+        misfire_grace_time=3600,   # 机器休眠/重启错过触发点时，1 小时内仍补跑
+    )
+    return f"internal:{job_id}"
+
+
+def list_internal_jobs() -> list[dict]:
+    if _scheduler is None:
+        return []
+    return [
+        {"id": j.id, "next_run": getattr(j, "next_run_time", None).isoformat()
+         if getattr(j, "next_run_time", None) else None}
+        for j in _scheduler.get_jobs() if j.id.startswith("internal:")
+    ]
+
+
 def add_task(cfg: dict) -> str:
     """添加定时任务。cfg: {name, hour, minute, action_type, scene/device_id/command}"""
     import uuid

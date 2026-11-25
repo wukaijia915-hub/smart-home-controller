@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "note": "房间四态融合规则。阈值全部在这里，代码不硬编码；empty_confident 只能由 corroborate() 在旁证一致后提升，fuse_rooms() 不会单源判无人。",
+  "rooms": [
+    {"room_id": "living", "label": "客厅", "nodes": ["node-living-01"], "privacy": "camera_optional"},
+    {"room_id": "bedroom", "label": "卧室", "nodes": ["node-bedroom-01"], "privacy": "no_camera"},
+    {"room_id": "bathroom", "label": "卫浴", "nodes": ["node-bathroom-01"], "privacy": "no_camera"}
+  ],
+  "rules": {
+    "empty_requires_all_nodes_idle_seconds": 300,
+    "empty_requires_min_corroborating_sources": 2,
+    "degraded_on_node_stale": true,
+    "motion_overrides_idle": true,
+    "uncertain_on_conflict": true
+  },
+  "confidence_weights": {
+    "node_online": 0.3,
+    "motion_recency": 0.4,
+    "corroboration": 0.3
+  },
+  "motion_recency_window_seconds": 120,
+
+  "corroboration": {
+    "note": "六路旁证的判定参数。除 CSI 外，PIR/插座/门磁/作息均为仿真量（证据里标 source_kind=simulated），接真实器件后只换取值来源，不改判定规则。",
+    "min_sources": 2,
+    "pir_motion_window_seconds": 120,
+    "power_active_threshold_w": 20,
+    "action_window_seconds": 300,
+    "door_window_seconds": 300,
+    "routine": {
+      "living": {"present_hours": [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]},
+      "bedroom": {"present_hours": [22, 23, 0, 1, 2, 3, 4, 5, 6, 7]},
+      "bathroom": {"present_hours": [6, 7, 8, 21, 22, 23]}
+    }
+  },
+
+  "events": {
+    "note": "房间状态变化 → 结构化事件（只有 empty_confident 会触发 no_person；uncertain 永不触发关灯/关空调）。",
+    "emit_on_transition": true,
+    "present_event": "person_detected",
+    "empty_event": "no_person",
+    "degraded_event": "room_degraded",
+    "cooldown_seconds": 120
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "note": "ESPectre 射频节点接入配置。enabled=false 时主链完全不启动，无硬件也能跑；凭据只从环境变量读，不写进文件。",
+  "enabled": false,
+  "transport": "mqtt",
+  "mqtt": {
+    "host": "127.0.0.1",
+    "port": 1883,
+    "topic_prefix": "espectre/v1/devices",
+    "username_env": "ESPECTRE_MQTT_USER",
+    "password_env": "ESPECTRE_MQTT_PASSWORD",
+    "keepalive_seconds": 30
+  },
+  "nodes": [
+    {"node_id": "node-living-01", "room_id": "living", "label": "客厅节点"},
+    {"node_id": "node-bedroom-01", "room_id": "bedroom", "label": "卧室节点"},
+    {"node_id": "node-bathroom-01", "room_id": "bathroom", "label": "卫浴节点"}
+  ],
+  "stale_after_seconds": 30,
+  "online_after_seconds": 60,
+  "sweep_seconds": 5,
+  "raw_csi_policy": "never_store"
+}

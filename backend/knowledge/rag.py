@@ -1,145 +1,72 @@
 # -*- coding: utf-8 -*-
-"""轻量级 RAG 知识库：设备说明书检索 + 用户习惯学习。
-无需向量数据库，采用关键词匹配 + 习惯统计，适合本地轻量部署。
-- 设备说明书：根据用户指令关键词检索相关设备知识，注入 LLM prompt
-- 用户习惯：记录用户历史操作偏好，统计频率，在决策时参考
+"""兼容垫片：`knowledge.rag` 转发到 `backend/memory/` 的三个记忆源。
+
+阶段 4 把原来堆在一个类里的「手册 + 习惯」拆成 `memory/{manuals,habits,experience}.py`
+（三源各自单一职责，且 experience 是新增的第三源）。为避免一次性改动
+`agent.py` / `root_agent.py` / `main.py` 的全部调用点，这里保留原来的
+`kb` 门面与全部方法签名，内部只做转发。
+
+**新代码不要再依赖本模块**，直接 `from ..memory import manuals, habits, experience`。
+本文件只应在遗留调用点消失后删除。
 """
 from __future__ import annotations
 
-import json
-import re
-from collections import Counter
-from pathlib import Path
-from typing import Optional
-
-KNOWLEDGE_DIR = Path(__file__).resolve().parent
-MANUALS_PATH = KNOWLEDGE_DIR / "device_manuals.json"
-HABITS_PATH = KNOWLEDGE_DIR / "user_habits.json"
+from ..memory import habits as _habits
+from ..memory import manuals as _manuals
 
 
-class KnowledgeBase:
-    def __init__(self):
-        self.manuals = self._load_manuals()
-        self.habits = self._load_habits()
+class _KnowledgeFacade:
+    """旧 `KnowledgeBase` 接口，全部转发到 memory/。"""
 
-    def _load_manuals(self) -> list[dict]:
-        if not MANUALS_PATH.exists():
-            return []
-        try:
-            with open(MANUALS_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return data.get("manuals", [])
-        except Exception as e:
-            print(f"[知识库] 设备说明书加载失败: {e}")
-            return []
+    # ---------- 手册 ----------
+    def search_manuals(self, query: str, top_k: int = 3) -> list[dict]:
+        return _manuals.manuals.search(query, top_k=top_k)
 
-    def _load_habits(self) -> dict:
-        if not HABITS_PATH.exists():
-            return {"commands": {}, "scenes": {}, "preferences": {}}
-        try:
-            with open(HABITS_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"[知识库] 用户习惯加载失败: {e}")
-            return {"commands": {}, "scenes": {}, "preferences": {}}
+    # ---------- 习惯 ----------
+    def get_habit_hint(self, query: str = "") -> str:
+        return _habits.habits.hint(query)
 
-    def _save_habits(self):
-        try:
-            with open(HABITS_PATH, "w", encoding="utf-8") as f:
-                json.dump(self.habits, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"[知识库] 用户习惯保存失败: {e}")
+    def record_command(self, device_id: str, command: str, params: dict) -> None:
+        _habits.habits.record_command(device_id, command, params)
 
-    def search_manuals(self, query: str, top_k: int = 2) -> list[dict]:
-        """根据用户指令关键词检索设备说明书。"""
-        if not query or not self.manuals:
-            return []
-        query = query.lower()
-        scored = []
-        for m in self.manuals:
-            score = 0
-            # 关键词匹配
-            for kw in m.get("keywords", []):
-                if kw in query:
-                    score += 2
-            # 名称匹配
-            if m.get("name", "") in query:
-                score += 3
-            # 内容关键词匹配
-            content = m.get("content", "").lower()
-            for word in re.findall(r'[\u4e00-\u9fa5]{2,}', query):
-                if word in content:
-                    score += 1
-            if score > 0:
-                scored.append((score, m))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [m for _, m in scored[:top_k]]
+    def record_scene(self, scene: str) -> None:
+        _habits.habits.record_scene(scene)
 
+    # ---------- 组合 ----------
     def get_context(self, query: str) -> str:
-        """生成注入 LLM prompt 的知识上下文。"""
+        """手册知识 + 用户习惯，拼成注入 prompt 的上下文块。"""
         parts = []
-        # 设备说明书
-        manuals = self.search_manuals(query, top_k=2)
-        if manuals:
-            parts.append("【设备知识参考】")
-            for m in manuals:
-                parts.append(f"- {m['name']}: {m['content']}")
-                if m.get("energy_tip"):
-                    parts.append(f"  节能提示: {m['energy_tip']}")
-        # 用户习惯
-        habit_hint = self.get_habit_hint(query)
-        if habit_hint:
-            parts.append(f"【用户习惯参考】{habit_hint}")
-        return "\n".join(parts) if parts else ""
-
-    def record_command(self, device_id: str, command: str, params: dict):
-        """记录用户设备操作习惯。"""
-        key = f"{device_id}:{command}"
-        self.habits.setdefault("commands", {})
-        self.habits["commands"][key] = self.habits["commands"].get(key, 0) + 1
-        # 记录参数偏好
-        if params:
-            pref_key = f"{device_id}:{command}:params"
-            self.habits.setdefault("preferences", {})
-            self.habits["preferences"].setdefault(pref_key, [])
-            self.habits["preferences"][pref_key].append(params)
-            # 只保留最近 20 条
-            self.habits["preferences"][pref_key] = self.habits["preferences"][pref_key][-20:]
-        self._save_habits()
-
-    def record_scene(self, scene: str):
-        """记录用户场景使用习惯。"""
-        self.habits.setdefault("scenes", {})
-        self.habits["scenes"][scene] = self.habits["scenes"].get(scene, 0) + 1
-        self._save_habits()
-
-    def get_habit_hint(self, query: str) -> str:
-        """根据用户指令生成习惯参考提示。"""
-        hints = []
-        # 最常用场景
-        scenes = self.habits.get("scenes", {})
-        if scenes:
-            top_scene = max(scenes, key=scenes.get)
-            if scenes[top_scene] >= 3:
-                hints.append(f"用户最常用场景是「{top_scene}」(使用{scenes[top_scene]}次)")
-        # 最常用设备操作
-        commands = self.habits.get("commands", {})
-        if commands:
-            top_cmd = max(commands, key=commands.get)
-            if commands[top_cmd] >= 3:
-                device, cmd = top_cmd.split(":")
-                hints.append(f"用户频繁操作「{device}」的「{cmd}」({commands[top_cmd]}次)")
-        return "；".join(hints) if hints else ""
+        manual_ctx = _manuals.manuals.get_context(query, top_k=2)
+        if manual_ctx:
+            parts.append(manual_ctx)
+        hint = _habits.habits.hint(query)
+        if hint:
+            parts.append(f"【用户习惯参考】{hint}")
+        return "\n".join(parts)
 
     def get_stats(self) -> dict:
-        """获取知识库统计信息。"""
+        h = _habits.habits.stats()
         return {
-            "manuals_count": len(self.manuals),
-            "total_commands": sum(self.habits.get("commands", {}).values()),
-            "total_scenes": sum(self.habits.get("scenes", {}).values()),
-            "top_scene": max(self.habits.get("scenes", {}), key=self.habits.get("scenes", {}).get, default=None),
+            "manuals_count": len(_manuals.manuals.manuals),
+            "total_commands": h["total_commands"],
+            "total_scenes": h["total_scenes"],
+            "top_scene": h["top_scene"],
+            "declared_preferences": h["declared_preferences"],
+            "conflicts": h["conflicts"],
+            "habits_path": str(_habits.habits.path),
         }
 
+    # ---------- 兼容旧属性访问 ----------
+    @property
+    def manuals(self) -> list[dict]:
+        return _manuals.manuals.manuals
 
-# 全局单例
-kb = KnowledgeBase()
+    @property
+    def habits(self) -> dict:
+        return _habits.habits.data
+
+
+# 旧类名保留为别名：`knowledge/__init__.py` 与任何外部脚本仍可 `from .rag import KnowledgeBase`
+KnowledgeBase = _KnowledgeFacade
+
+kb = _KnowledgeFacade()

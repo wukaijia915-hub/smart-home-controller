@@ -23,6 +23,13 @@ _DEFAULT_CONFIG = {
         "humidity": {"initial": 50, "min": 20, "max": 90, "fluctuation": 1.0},
         "light_level": {"initial": 400, "min": 0, "max": 1000, "fluctuation": 20},
         "air_quality": {"initial": 85, "min": 20, "max": 100, "fluctuation": 2.0},
+        "pir_living": {"initial": True},
+        "pir_bedroom": {"initial": False},
+        "pir_bathroom": {"initial": False},
+        "plug_power_living": {"initial": 35, "min": 0, "max": 300},
+        "plug_power_bedroom": {"initial": 5, "min": 0, "max": 300},
+        "plug_power_bathroom": {"initial": 2, "min": 0, "max": 300},
+        "door_entry_open": {"initial": False},
     },
     "device_effects": {
         "light_on_brightness_delta": 50,
@@ -62,6 +69,12 @@ class SensorSimulator:
             "motion_bedroom": sc.get("motion_bedroom", {}).get("initial", False),
             "air_quality": sc.get("air_quality", {}).get("initial", 85),
         }
+        # 六路旁证中的 PIR / 插座功率 / 门磁（仿真量，非实测）
+        for key, default in (
+                ("pir_living", True), ("pir_bedroom", False), ("pir_bathroom", False),
+                ("plug_power_living", 35.0), ("plug_power_bedroom", 5.0),
+                ("plug_power_bathroom", 2.0), ("door_entry_open", False)):
+            self.values[key] = sc.get(key, {}).get("initial", default)
         self._listeners: list[Callable[[dict], None]] = []
         self._running = False
 
@@ -134,6 +147,23 @@ class SensorSimulator:
             v["motion_living"] = not v["motion_living"]
         if random.random() < 0.05:
             v["motion_bedroom"] = not v["motion_bedroom"]
+
+        # ---- 旁证仿真（PIR / 插座功率 / 门磁） ----
+        # PIR 只对较大动作敏感：motion 为真时有 80% 概率触发，静坐时归 False
+        v["pir_living"] = bool(v["motion_living"] and random.random() < 0.8)
+        v["pir_bedroom"] = bool(v["motion_bedroom"] and random.random() < 0.8)
+        if random.random() < 0.02:
+            v["pir_bathroom"] = not v.get("pir_bathroom", False)
+        tv = self.registry.get("tv_living_01")
+        v["plug_power_living"] = 45.0 if (tv and tv.get("on")) else 3.0 + random.uniform(0, 2)
+        dehum = self.registry.get("dehumidifier_bedroom_01")
+        v["plug_power_bedroom"] = 60.0 if (dehum and dehum.get("on")) else 2.0 + random.uniform(0, 1.5)
+        v["plug_power_bathroom"] = 2.0 + random.uniform(0, 1.0)
+        # 门磁：偶发开门，开了之后很快关上
+        if random.random() < 0.01:
+            v["door_entry_open"] = True
+        elif v.get("door_entry_open") and random.random() < 0.5:
+            v["door_entry_open"] = False
 
         # 空气质量
         aq_fluct = sc.get("air_quality", {}).get("fluctuation", 2.0)

@@ -128,9 +128,15 @@ ev3 = router.route({"type": "fall_detected", "source": "edge_vision",
 check("冷却期重复跌倒被跳过",
       any(a.get("type") == "cooldown" and a.get("status") == "skipped" for a in ev3.actions),
       str([a.get("type") for a in ev3.actions]))
-# 不匹配事件：无路由命中
+# 不匹配事件：无路由命中。
+# 断言"被忽略的路由数 == 配置里的路由总数"，而不是写死 3 —— 原来写死数字，
+# 结果阶段 4 往 event_routes.json 加了 7 条环境联动路由，这条测试就假失败了。
+# 被测的性质是"没有任何路由命中"，它不该随配置文件里路由条数变化。
 ev4 = router.route({"type": "person_present", "source": "edge_vision", "payload": {}})
-check("未配置的事件不触发路由", len(ev4.matched_routes) == 0 and len(ev4.ignored_routes) == 3)
+_total_routes = len(router.raw.get("routes", []))
+check("未配置的事件不触发路由",
+      len(ev4.matched_routes) == 0 and len(ev4.ignored_routes) == _total_routes,
+      f"matched={ev4.matched_routes} ignored={len(ev4.ignored_routes)}/{_total_routes}")
 
 print(f"\n结果: {PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
